@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Data & artifacts (large / regenerable)
+data/raw/*
+data/rectified/*
+data/labels/*
+!data/**/.gitkeep
+out/
+weights/*.pt
+*.insv
+*.insp
+*.mp4
+*.gpx
+*.srt
+
+# Models / checkpoints (auto-downloaded / trained — regenerable)
+*.pt
+*.onnx
+*.engine
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
