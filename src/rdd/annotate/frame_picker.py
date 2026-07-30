@@ -59,9 +59,19 @@ def pick_frames(frame_paths: list[Path], cfg, model=None) -> list[Path]:
             return [p for _, p in scored[:n]]
 
     # diversity: greedy farthest-point sampling on color-histogram features
-    feats = np.array([_feature(cv2.imread(str(p))) for p in frame_paths])
-    if len(feats) == 0:
+    readable, features = [], []
+    for p in frame_paths:
+        img = cv2.imread(str(p))
+        if img is None:
+            log.warning("Skipping unreadable frame %s", p)
+            continue
+        readable.append(p)
+        features.append(_feature(img))
+    if not features:
+        log.warning("No readable frames among %d paths", len(frame_paths))
         return []
+    frame_paths = readable
+    feats = np.array(features)
     chosen_idx = [0]
     dists = np.linalg.norm(feats - feats[0], axis=1)
     while len(chosen_idx) < min(n, len(feats)):

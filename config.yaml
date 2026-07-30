@@ -2,146 +2,380 @@
 # Road Defect Detection Pipeline — configuration
 # Every stage reads from this file. Paths are relative to the repo root unless
 # absolute. Anything you change here changes pipeline behaviour; no code edits.
+#
+# Pipeline order:
+#   ingest -> viewpoint -> reproject -> quality -> sampling -> scale
+#          -> inference (ROAD SEGMENTATION -> SURFACE CONDITION -> detect/track)
+#          -> severity -> report
 # =============================================================================
 
 run:
   name: "default"            # used in output subdir + manifest
   seed: 1337
-  device: "auto"             # auto | cuda | cuda:0 | cpu   (auto -> cuda if available else cpu)
+  device: "auto"             # auto | cuda | cuda:0 | cpu
   output_dir: "out"          # per-run artifacts go to <output_dir>/<run.name>/
+
+# ---------------------------------------------------------------------------
+# 0. VIEWPOINT — what camera shot this, which decides nearly everything else
+# ---------------------------------------------------------------------------
+view:
+  # car_360     : 360 equirectangular from a survey vehicle -> needs v360 flattening
+  # car_flat    : ordinary forward-facing vehicle camera    -> no flattening
+  # drone_nadir : drone pointing straight down              -> no flattening, top-down
+  profile: "car_360"
+
+  # Where the road is expected to be, before any pixels are looked at. This
+  # seeds road segmentation, so it only has to be roughly right.
+  road_prior:
+    # -- trapezoid (car views): fractions of frame width/height ---------------
+    # bottom_y/top_y bound the road vertically; half widths set the taper.
+    bottom_y: 1.0
+    top_y: 0.55                # ~horizon; above this is sky/vegetation
+    bottom_half_width: 0.48
+    top_half_width: 0.12
+    center_x: 0.5
+    # -- band (drone_nadir) ---------------------------------------------------
+    axis: "auto"               # auto | vertical | horizontal (auto: inferred once)
+    band_center: 0.5
+    band_half_width: 0.30
+
+  # Only used when profile == drone_nadir. Supplying either gsd_m_per_px, or
+  # altitude + camera intrinsics, turns defect areas into real m² and unlocks
+  # ABSOLUTE severity thresholds instead of clip-relative ones.
+  drone:
+    gsd_m_per_px: null         # metres per pixel on the ground, if you know it
+    altitude_m: null           # AGL flight height
+    camera:
+      focal_mm: null
+      sensor_width_mm: null
 
 # ---------------------------------------------------------------------------
 # 1. INGEST — accept video, detect format, extract telemetry
 # ---------------------------------------------------------------------------
 ingest:
-  # Supported: .mp4 (equirectangular passthrough), .insv/.insp (Insta360 dual-fisheye)
-  # If dual-fisheye and auto_convert is true we try FFmpeg v360; otherwise we
-  # print the Insta360 Studio export instructions and stop.
+  # Supported: .mp4 (equirectangular or flat), .insv/.insp (Insta360 dual-fisheye)
   auto_convert_insv: true
-  # Where a converted equirectangular mp4 is written (only for .insv/.insp input).
   equirect_cache: "data/raw"
   telemetry:
     enabled: true
-    # Search order for GPS. First hit wins. All optional — pipeline runs GPS-less.
-    sources: ["sidecar_gpx", "sidecar_srt", "embedded"]   # embedded = ffprobe/exiftool metadata
-    # If a sidecar is not next to the video, set an explicit path (or leave null).
+    sources: ["sidecar_gpx", "sidecar_srt", "embedded"]
     gpx_path: null
     srt_path: null
 
 # ---------------------------------------------------------------------------
-# 2. PREPROCESS — 360 -> flat "road camera", optional bird's-eye, frame sampling
+# 2. PREPROCESS — 360 -> flat "road camera", ground scale, frame sampling
 # ---------------------------------------------------------------------------
 preprocess:
   reproject:
-    enabled: true
-    input_projection: "equirect"   # equirect | dual_fisheye  (dual_fisheye handled in ingest)
-    # Virtual "road camera" pose. Pitch negative = look down at the road ahead.
-    yaw_deg: 0.0                    # forward
-    pitch_deg: -30.0               # look down toward road surface
+    enabled: true                  # ignored for rectilinear viewpoints
+    input_projection: "equirect"
+    yaw_deg: 0.0                   # forward
+    pitch_deg: -30.0               # negative looks down at the road
     roll_deg: 0.0
-    h_fov_deg: 110.0               # horizontal field of view of the flat view
+    h_fov_deg: 110.0
     v_fov_deg: 70.0
-    out_width: 1280
-    out_height: 720
-    interp: "lanczos"              # ffmpeg v360 interp
-  ipm:                             # optional bird's-eye / inverse-perspective-map
+    # 'auto' matches the source's real angular detail: an equirect frame carries
+    # only src_width * h_fov/360 px across the view, so a smaller output throws
+    # detail away and a much larger one just interpolates. Hard numbers are the
+    # single most common cause of a soft, "unclear" rectified video.
+    out_width: "auto"
+    out_height: "auto"
+    min_width: 960                 # clamps for 'auto'
+    max_width: 3840
+    # A gnomonic view has square pixels only when w/h == tan(h_fov/2)/tan(v_fov/2).
+    # Leave true unless you deliberately want a stretched view.
+    preserve_aspect: true
+    interp: "lanczos"
+    crf: 18                        # intermediate encode quality (lower = better)
+    preset: "medium"
+    lossless: false                # true = x264 crf 0; large files, zero loss
+
+  ipm:                             # bird's-eye homography — used for MEASUREMENT
+    # Enabling this does not warp the video. It gives per-pixel ground area so
+    # defect size is reported in m² instead of pixels (pixel area in a
+    # perspective view confounds size with distance).
     enabled: false
-    # Homography source/dest points in the *rectilinear* image (fractions of w/h).
-    # src = trapezoid on the road plane; dst = rectangle (top-down).
     src_points: [[0.20, 1.0], [0.80, 1.0], [0.62, 0.55], [0.38, 0.55]]
     dst_points: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
     out_width: 640
     out_height: 960
+    # Real-world [width, length] in metres of the src_points trapezoid. Required
+    # for m² output — measure it once on site.
+    ground_extent_m: null
+
   sampling:
-    # Sample by DISTANCE traveled to kill redundant near-identical frames.
     mode: "distance"               # distance | time | every_n
-    distance_m: 2.0                # sample every N metres (needs GPS or odometry)
-    time_s: 0.5                    # used if mode == time
-    every_n: 15                    # used if mode == every_n
-    odometry_fallback: "optical_flow"   # when GPS absent: optical_flow | none
+    distance_m: 2.0
+    time_s: 0.5
+    every_n: 15
+    odometry_fallback: "optical_flow"
+    flow_units_per_m: 5.0          # optical-flow units per metre (arbitrary scale)
     save_frames: true
     frames_dir: "data/rectified"
+    jpeg_quality: 95               # labeling frames: keep compression artifacts low
 
 # ---------------------------------------------------------------------------
-# 3. ANNOTATE — SAM-assisted labeling helper (not used at inference)
+# 3. QUALITY — measure the footage, then enhance it consistently
+# ---------------------------------------------------------------------------
+quality:
+  assess:
+    enabled: true
+    sample_frames: 60              # frames used to learn this clip's distribution
+    drop_unusable: true            # skip detection on frames too poor to trust
+    # Thresholds are relative to the clip (absolute ones do not transfer between
+    # cameras) with an absolute floor as a backstop.
+    sharpness_rel_floor: 0.35      # fraction of the clip's median sharpness
+    sharpness_abs_floor: 8.0
+    min_contrast: 0.04
+    max_clipped_high: 0.25         # blown highlights
+    max_clipped_low: 0.35          # crushed blacks
+
+  enhance:
+    # IMPORTANT: these settings apply to BOTH the saved labeling frames and the
+    # frames fed to the detector. Changing them after labeling creates a silent
+    # train/serve mismatch — the manifest records a fingerprint so you can tell.
+    enabled: true
+    adaptive: true                 # nudge settings toward what the clip needs
+    white_balance: false           # grey-world; helps strong colour casts
+    denoise: "none"                # none | bilateral | nlmeans (nlmeans is slow)
+    denoise_strength: 0.4
+    clahe_clip: 2.0                # local contrast; the main lever for dull footage
+    clahe_grid: 8
+    unsharp_amount: 0.6            # recovers softness from resampling
+    unsharp_sigma: 1.2
+    unsharp_threshold: 3           # skip flat areas so noise is not amplified
+    min_width: 0                   # upscale narrower frames; 0 = off
+    max_upscale: 2.0
+
+# ---------------------------------------------------------------------------
+# 4. ROAD SEGMENTATION — find the drivable surface BEFORE looking for defects
+# ---------------------------------------------------------------------------
+roadseg:
+  # classical : colour+texture similarity seeded by the geometric prior.
+  #             Real-time on CPU, no extra deps. Default.
+  # geometric : the prior alone. Crude but never fails.
+  # sam       : prompt SAM with the prior. Most accurate, very slow on CPU.
+  # none      : no road constraint (expect off-road false positives).
+  backend: "classical"
+  stride: 1                        # recompute every N frames (>1 is much faster)
+
+  classical:
+    work_width: 480                # segmentation resolution; masks are upscaled
+    distance_tau: 2.5              # similarity cutoff, in robust sigmas
+    weights:                       # per-channel importance
+      l: 1.0                       # lightness
+      a: 1.0                       # LAB green-red
+      b: 1.0                       # LAB blue-yellow
+      s: 0.7                       # saturation
+      tex: 1.3                     # texture: the strongest road/vegetation cue
+    texture_ksize: 7
+    seed_erode_frac: 0.05          # shrink the prior to get a confident seed
+    search_dilate_frac: 0.06       # allow growth slightly beyond the prior
+    open_frac: 0.006               # speckle removal
+    close_frac: 0.02               # gap bridging
+    # Potholes/puddles are appearance outliers INSIDE the road, so they get
+    # carved out as holes. Filling them puts the defects back on the road —
+    # without this, gating would reject the very things it should keep.
+    fill_holes: true
+    min_coverage: 0.02             # below this the result is implausible
+    max_coverage: 0.95             # above this it has swallowed the whole frame
+    min_seed_retention: 0.25       # must keep this much of the confident seed
+    # If the similarity test accepts nearly everything it is allowed to, it
+    # discriminated nothing and the "mask" is really just the prior. Treated as a
+    # fallback so it cannot masquerade as a measurement.
+    max_search_fill: 0.98
+
+  temporal:
+    # EMA over per-pixel road probability. A flickering road mask breaks defect
+    # tracks and inflates unique counts. alpha = weight of the current frame;
+    # 1.0 disables smoothing, lower lags more on bends.
+    alpha: 0.5
+    threshold: 0.5
+
+  sam:
+    model: "sam2.1_b.pt"
+    n_positive: 5
+    n_negative: 4
+    seed_erode_frac: 0.05
+    search_dilate_frac: 0.06
+    min_coverage: 0.02
+    max_coverage: 0.95
+
+  gating:
+    # gate : keep detections, drop those off the road (safe default)
+    # mask : blank non-road pixels before detection — only if you also trained
+    #        on masked frames, otherwise it is a domain shift
+    # off  : no gating
+    mode: "gate"
+    min_road_overlap: 0.3          # detection must be this much on the road
+    # If the road mask is only a low-confidence guess (geometric fallback),
+    # gating on it would discard real defects. Below this confidence, gating
+    # is suspended for that frame.
+    min_confidence: 0.2
+
+# ---------------------------------------------------------------------------
+# 5. SURFACE CONDITION — mud and water are OCCLUDERS, not just classes
+# ---------------------------------------------------------------------------
+# You cannot inspect a surface you cannot see. Water and mud sit on top of the
+# road and hide what is underneath, so this stage builds an occlusion mask and
+# the pipeline abstains there rather than reporting "no defect".
+# All thresholds are z-scores against the road's OWN measured appearance, since
+# absolute colour thresholds do not survive different soils or lighting.
+surface:
+  enabled: true
+  stride: 1                        # recompute every N frames
+  texture_ksize: 7
+
+  # Detection uses region-averaged z-scores: the baseline sigma is per-pixel, so
+  # ~1/3 of a clean road exceeds 1 sigma on sensor noise alone and raw per-pixel
+  # thresholds would flag most of the road. Averaging suppresses that noise.
+  region_ksize: 21                 # detection kernel (noise-robust, erodes edges)
+  # ...but a large kernel shrinks small patches, and measured AREA drives the
+  # headline "% unassessable". So extent is recovered by growing the confident
+  # cores into a lightly smoothed map at a relaxed threshold (hysteresis). A
+  # relaxed region survives only if it contains a confident core.
+  extent_ksize: 7
+  extent_threshold_scale: 0.6
+
+  # abstain : flag hidden defects indeterminate, never severity-score them, and
+  #           report the unassessable road fraction  (recommended)
+  # flag    : score them anyway but mark them
+  # exclude : drop them from the report entirely
+  occlusion_policy: "abstain"
+  occlusion_threshold: 0.5         # fraction of a defect under water/mud to abstain
+
+  # Classes that ARE the occluder — never marked "hidden" by their own mask.
+  occluder_classes: ["water_logging"]
+
+  water:
+    # Smoothness is mandatory: a water surface is specular and destroys the
+    # high-frequency texture of gravel. Then any one supporting cue.
+    min_smoother_z: 1.0
+    min_brighter_z: 1.0            # sky/sun reflection
+    min_desat_z: 1.0               # washed out
+    min_darker_z: 1.5              # deep water
+
+  mud:
+    # A warm shift in LINEAR-RGB chromaticity is mandatory. Chromaticity is
+    # invariant under illumination, so this is what separates wet soil from plain
+    # shade — LAB a/b cannot do it, since merely darkening a neutral grey moves
+    # them several units purely as a gamma artifact.
+    # Wet laterite shifts chromaticity by ~0.3 (>20 sigma), so this threshold has
+    # plenty of headroom and is set to reject ordinary surface variation.
+    min_warmer_z: 2.5
+    min_darker_z: 0.6
+    min_smoother_z: 0.5
+
+  shadow:
+    # Shadow = less light: brightness drops but chromaticity and
+    # brightness-relative texture are preserved. Detected explicitly and excluded,
+    # or every patch of shade becomes "mud" and the unassessable figure is junk.
+    min_darker_z: 1.0
+    # Keeps a *shadowed puddle* detectable as water rather than dismissed as shade.
+    max_smoother_z: 0.6
+    max_chroma_shift_z: 1.5
+
+  min_blob_area_frac: 0.002        # ignore specks below this fraction of road area
+  close_px: 3
+
+  # If the WHOLE road is covered, the covering becomes the baseline and relative
+  # detection finds nothing. These absolute values only trigger a warning.
+  absolute_mud_hint:
+    min_a: 140.0
+    min_b: 140.0
+    max_texture: 4.0
+
+# ---------------------------------------------------------------------------
+# 6. ANNOTATE — SAM-assisted labeling helper (not used at inference)
 # ---------------------------------------------------------------------------
 annotate:
-  sam_model: "sam2.1_b.pt"         # ultralytics SAM checkpoint (auto-downloads)
+  sam_model: "sam2.1_b.pt"
   frame_picker:
     strategy: "diversity"          # diversity | uncertainty | random
-    n_frames: 200                  # how many frames to surface for labeling first
-  labels_dir: "data/labels"        # YOLO-seg txt exported here
+    n_frames: 200
+  labels_dir: "data/labels"
   export_format: "yolo_seg"
 
 # ---------------------------------------------------------------------------
-# 4. MODEL — YOLO seg, warm-start + fine-tune
+# 7. MODEL — YOLO seg, warm-start + fine-tune
 # ---------------------------------------------------------------------------
 model:
-  # Primary is tried first; if the ultralytics build can't resolve it we fall
-  # back to `fallback` automatically and log a warning.
   arch: "yolo26-seg"
   fallback_arch: "yolo11-seg"
-  size: "m"                        # n|s|m|l|x  -> e.g. yolo11m-seg.pt
-  # Warm-start weights: a road-damage checkpoint to start from BEFORE your labels
-  # exist. Can be a local .pt or a URL/Roboflow export. null -> COCO-seg pretrain.
+  size: "m"
   warm_start_weights: null
   classes: ["pothole", "water_logging", "rut_erosion", "crack"]
   train:
-    data_yaml: "data/dataset.yaml" # generated by model/split.py
+    data_yaml: "data/dataset.yaml"
     epochs: 100
     imgsz: 960
     batch: 8
     patience: 20
-    # CRITICAL: never random-split adjacent frames. Split by road segment/time.
     split:
       mode: "segment"              # segment | time  (never "random")
-      # A "segment" = a contiguous run of frames (by track/road id or a time gap).
-      segment_gap_s: 5.0           # gap larger than this starts a new segment
+      segment_gap_s: 5.0
       ratios: {train: 0.7, val: 0.15, test: 0.15}
 
 # ---------------------------------------------------------------------------
-# 5. DEPTH — OPTIONAL. Severity from mask area + estimated depth.
+# 8. DEPTH — OPTIONAL. Adds depth to severity where it is measurable.
 # ---------------------------------------------------------------------------
 depth:
   enabled: false
-  backend: "video_depth_anything"  # video_depth_anything | yolo_depth
-  metric: true                     # metric depth (m) vs relative
-  model: "vitl"                    # video-depth-anything encoder
-  severity:
-    # severity = w_area * norm(mask_area) + w_depth * norm(depth)
-    w_area: 0.5
-    w_depth: 0.5
-    # thresholds -> low/medium/high labels (on the combined 0..1 score)
-    bins: {low: 0.33, medium: 0.66}
+  backend: "video_depth_anything"
+  metric: true
+  model: "vitl"
 
 # ---------------------------------------------------------------------------
-# 6. INFERENCE — detect + track + unique count + annotated video
+# 9. SEVERITY
+# ---------------------------------------------------------------------------
+severity:
+  # With ground scale (drone GSD or IPM ground_extent_m), severity uses ABSOLUTE
+  # physical thresholds and is comparable between videos.
+  absolute_bins_m2:
+    medium: 0.10                   # >= 0.10 m² -> medium
+    high: 0.50                     # >= 0.50 m² -> high
+  # Without scale it falls back to min-max across the run, which means the
+  # biggest defect present is always "high". The report says so explicitly.
+  bins: {low: 0.33, medium: 0.66}
+  w_area: 0.5                      # weights used only when depth is enabled
+  w_depth: 0.5
+
+# ---------------------------------------------------------------------------
+# 10. INFERENCE — detect + track + unique count + annotated video
 # ---------------------------------------------------------------------------
 inference:
-  weights: null                    # trained .pt; null -> use warm_start / arch default
+  weights: null                    # trained .pt; null -> warm_start / arch default
   conf: 0.25
-  iou: 0.5                         # NMS IoU
-  imgsz: 960
+  iou: 0.5
+  imgsz: 960                       # raise toward native width for small cracks
   tracker: "botsort"               # botsort | bytetrack
-  tracker_cfg: null                # optional custom tracker yaml; null -> ultralytics default
-  min_track_len: 3                 # a track must persist >= N frames to count as a real defect
+  tracker_cfg: null
+  min_track_len: 3                 # frames a track must persist to count
   render:
     draw_masks: true
     draw_boxes: false
     draw_track_id: true
-    running_count_overlay: true    # live unique-count HUD in the annotated video
-    alpha: 0.45                    # mask fill opacity
+    draw_road: true                # green wash + outline of the segmented road
+    draw_surface: true             # hatched water/mud = unassessable
+    road_alpha: 0.18
+    surface_alpha: 0.35
+    draw_road_outline: true
+    running_count_overlay: true
+    alpha: 0.45
     fps: null                      # null -> match source
+    crf: 18                        # x264 via ffmpeg (replaces low-quality mp4v)
+    preset: "medium"
 
 # ---------------------------------------------------------------------------
-# 7. REPORT
+# 11. REPORT
 # ---------------------------------------------------------------------------
 report:
   csv: true
   json: true
-  format: "html"                   # html | pdf   (pdf needs reportlab/weasyprint)
+  format: "html"                   # html | pdf   (pdf needs reportlab)
   crops:
     enabled: true
-    max_per_class: 6               # sample annotated crops embedded in the report
+    max_per_class: 6
+    pad_px: 15
   map:
     enabled: true                  # only rendered if GPS is present

@@ -2,8 +2,8 @@
 ultralytics>=8.3.0          # YOLO26/YOLO11 seg + SAM + built-in trackers
 lap>=0.5.12                 # linear assignment — REQUIRED by BoT-SORT/ByteTrack
 supervision>=0.25.0         # annotators + ByteTrack utilities
-opencv-python>=4.9.0
-numpy>=1.26,<2.3
+opencv-python>=4.9.0        # road segmentation, surface analysis, enhancement
+numpy>=1.26                 # 2.x is fine; ultralytics pins the compatible range
 pandas>=2.1
 pyyaml>=6.0
 tqdm>=4.66
@@ -16,11 +16,15 @@ gpxpy>=1.6                  # .gpx parsing
 jinja2>=3.1                 # HTML report templating
 reportlab>=4.1              # PDF report (only if report.format == pdf)
 
+# Tests --------------------------------------------------------------------
+pytest>=8.0
+
 # Optional depth stage (install separately; heavy) -------------------------
 # torch / torchvision are pulled by ultralytics; Video-Depth-Anything is
 # installed from source — see README. Not required for the core pipeline.
 # git+https://github.com/DepthAnything/Video-Depth-Anything.git
 
 # NOTE: external binaries required (not pip-installable):
-#   * ffmpeg (with the v360 filter) — 360->flat reprojection & .insv conversion
+#   * ffmpeg (with the v360 filter) — 360->flat reprojection, .insv conversion,
+#     and the H.264 encoder used for the annotated video
 #   * exiftool (optional) — richer embedded-metadata extraction

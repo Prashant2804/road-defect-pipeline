@@ -101,13 +101,21 @@ def ingest_video(input_path: str | Path, cfg) -> IngestResult:
 
     if ext in EQUIRECT_EXTS:
         w, h, fps, dur = _probe_dims(src)
-        if w and h and abs(w - 2 * h) > 0.1 * w:
+        profile = cfg.get_path("view.profile", "car_360")
+        # Only 360 footage should be ~2:1. Warning about it for a drone or flat
+        # car camera would be noise, and staying silent for car_360 would let a
+        # non-equirect input be reprojected into nonsense.
+        if profile == "car_360" and w and h and abs(w - 2 * h) > 0.1 * w:
             log.warning(
-                "Input %s is %dx%d — not ~2:1. If this is NOT equirectangular, "
-                "reprojection results will be wrong.", src.name, w, h,
+                "Input %s is %dx%d — not ~2:1, but view.profile is 'car_360' which "
+                "expects equirectangular. If this is a normal (rectilinear) camera, "
+                "set view.profile to 'car_flat' or 'drone_nadir'; otherwise "
+                "reprojection will be wrong.", src.name, w, h,
             )
-        log.info("Equirectangular passthrough: %s (%sx%s @ %sfps)", src.name, w, h, fps)
-        return IngestResult(src, src, False, "equirect", w, h, fps, dur)
+        log.info("Video passthrough: %s (%sx%s @ %sfps, view.profile=%s)",
+                 src.name, w, h, fps, profile)
+        projection = "equirect" if profile == "car_360" else "rectilinear"
+        return IngestResult(src, src, False, projection, w, h, fps, dur)
 
     if ext in INSTA360_EXTS:
         if not cfg.get_path("ingest.auto_convert_insv", False):
