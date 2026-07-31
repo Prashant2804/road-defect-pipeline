@@ -111,8 +111,9 @@ class UniqueCounter:
         # of a class we can see perfectly well.
         self.occluder_classes = tuple(occluder_classes)
         self.tracks: dict[int, Track] = {}
-        self.raw_detections = 0     # per-frame detection count (reported alongside)
-        self.rejected_off_road = 0  # detections dropped for not being on the road
+        self.raw_detections = 0        # per-frame detection count (reported alongside)
+        self.rejected_off_road = 0     # dropped for not being on the road surface
+        self.rejected_out_of_zone = 0  # dropped for being beyond resolvable range
 
     def is_occluder(self, cls_name: str) -> bool:
         return cls_name in self.occluder_classes

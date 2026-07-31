@@ -147,3 +147,15 @@ def surface_map(road_px: float, water_px: float, mud_px: float):
     z = np.zeros((2, 2), dtype=bool)
     return SurfaceMap(water=z, mud=z.copy(), dry=z.copy(), occlusion=z.copy(),
                       road_area_px=road_px, water_px=water_px, mud_px=mud_px)
+
+
+def _filled_like(frame, mask, bgr, sigma):
+    """Replace `mask` pixels with a uniform colour + texture level.
+
+    Used to build fully-contaminated roads, where relative detection is blind and
+    only absolute plausibility can help.
+    """
+    out = frame.copy()
+    layer = _clip(_noisy(frame.shape[:2], bgr, sigma))
+    out[mask] = layer[mask]
+    return out

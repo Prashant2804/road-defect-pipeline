@@ -57,6 +57,7 @@ class SurfaceMap:
     water_px: float = 0.0
     mud_px: float = 0.0
     baseline_source: str = "segmenter"
+    plausibility: "SurfacePlausibility | None" = None
 
     def _frac(self, px: float) -> float:
         return (px / self.road_area_px) if self.road_area_px > 0 else 0.0
@@ -175,21 +176,115 @@ def _baseline_stats(feats, road, baseline) -> tuple[dict, str]:
     return channel_stats(feats, road, _CHANNELS), "road-region"
 
 
-def _warn_uniform_contamination(stats: dict, cfg) -> None:
-    """Flag the case where the whole road already looks like mud."""
+@dataclass(frozen=True)
+class SurfacePlausibility:
+    """Does the 'road' region actually look like a road surface at all?
+
+    This is the one place the pipeline uses **absolute** appearance thresholds, and
+    it is a deliberate exception to the relative-statistics rule used everywhere
+    else. The reason is a blind spot that relative methods have by construction: if
+    water or mud covers the *entire* carriageway, the contaminant becomes the
+    baseline, every pixel matches it, and the relative detector confidently reports a
+    clean road. That is the exact scenario the pipeline is required to refuse.
+
+    Absolute thresholds do not transfer between cameras and soils as reliably, so
+    they are set loose and used only to catch the catastrophic case — "this whole
+    surface is water / mud / vegetation" — never to grade severity.
+    """
+
+    verdict: str          # road | water | mud | vegetation | unknown
+    reason: str = ""
+    texture: float = 0.0
+    scores: dict = field(default_factory=dict)
+
+    @property
+    def is_road(self) -> bool:
+        return self.verdict in ("road", "unknown")
+
+
+def assess_plausibility(feats, road, stats: dict, cfg) -> SurfacePlausibility:
+    """Classify the road region's absolute appearance."""
+    import numpy as np
+
+    ac = cfg.get_path("surface.plausibility", {}) or {}
+    if not road.any():
+        return SurfacePlausibility("unknown", "no road region")
+
+    l_med = stats.get("l", (0.0, 1.0))[0]
     a_med = stats.get("a", (0.0, 1.0))[0]
     b_med = stats.get("b", (0.0, 1.0))[0]
+    s_med = stats.get("s", (0.0, 1.0))[0]
     tex_med = stats.get("tex", (0.0, 1.0))[0]
-    ac = cfg.get_path("surface.absolute_mud_hint", {}) or {}
-    if (a_med >= float(ac.get("min_a", 140.0))
-            and b_med >= float(ac.get("min_b", 140.0))
-            and tex_med <= float(ac.get("max_texture", 4.0))):
-        log.warning(
-            "Road baseline itself looks mud-like (LAB a=%.0f b=%.0f, texture=%.1f). "
-            "If the whole surface is covered, relative detection cannot separate "
-            "mud from road — the unassessable fraction will read low. Inspect the "
-            "annotated video before trusting the condition breakdown.",
-            a_med, b_med, tex_med,
+    hue_med = float(np.median(feats.hue[road]))
+    scores = {"l": l_med, "a": a_med, "b": b_med, "s": s_med,
+              "tex": tex_med, "hue": hue_med}
+
+    # Vegetation: green hue with real texture. A vehicle "driving" on this has left
+    # the carriageway, or the mask has latched onto the verge.
+    if (float(ac.get("veg_hue_lo", 35.0)) <= hue_med <= float(ac.get("veg_hue_hi", 90.0))
+            and s_med >= float(ac.get("veg_min_saturation", 60.0))
+            and tex_med >= float(ac.get("veg_min_texture", 6.0))):
+        return SurfacePlausibility(
+            "vegetation",
+            f"surface is vegetation-coloured (hue {hue_med:.0f}, saturation "
+            f"{s_med:.0f}, texture {tex_med:.1f}) — not a carriageway",
+            tex_med, scores)
+
+    # Mud: warm chroma with the texture flattened by wet soil.
+    if (a_med >= float(ac.get("mud_min_a", 140.0))
+            and b_med >= float(ac.get("mud_min_b", 145.0))
+            and tex_med <= float(ac.get("mud_max_texture", 4.0))):
+        return SurfacePlausibility(
+            "mud",
+            f"entire road surface looks mud-covered (LAB a={a_med:.0f} "
+            f"b={b_med:.0f}, texture {tex_med:.1f})",
+            tex_med, scores)
+
+    # Water: specular, so texture is essentially gone, and either bright (sky
+    # reflection) or washed out.
+    if (tex_med <= float(ac.get("water_max_texture", 2.0))
+            and (l_med >= float(ac.get("water_min_l", 170.0))
+                 or s_med <= float(ac.get("water_max_saturation", 25.0)))):
+        return SurfacePlausibility(
+            "water",
+            f"entire road surface looks submerged (texture {tex_med:.1f}, "
+            f"lightness {l_med:.0f}, saturation {s_med:.0f})",
+            tex_med, scores)
+
+    return SurfacePlausibility("road", "", tex_med, scores)
+
+
+class _OnceLogger:
+    """Log a given message key at most once per process run.
+
+    These conditions hold for whole stretches of a clip, so per-frame logging buries
+    everything else in the run log.
+    """
+
+    def __init__(self):
+        self._seen: set[str] = set()
+
+    def warn(self, key: str, msg: str, *args) -> None:
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        log.warning(msg, *args)
+
+    def reset(self) -> None:
+        self._seen.clear()
+
+
+_once = _OnceLogger()
+
+
+def _warn_plausibility(p: SurfacePlausibility) -> None:
+    if p.verdict in ("water", "mud", "vegetation"):
+        _once.warn(
+            p.verdict,
+            "Surface plausibility: %s. Relative detection cannot separate a "
+            "contaminant from the road when the contaminant IS the whole surface, "
+            "so the validity gate blocks these frames instead of reporting a clean "
+            "road. (Logged once per run.)", p.reason,
         )
 
 
@@ -202,12 +297,13 @@ def _warn_featureless_baseline(stats: dict) -> None:
     """
     tex_med = stats.get("tex", (0.0, 1.0))[0]
     if tex_med < 0.5:
-        log.warning(
+        _once.warn(
+            "featureless",
             "Road surface has almost no measurable texture (median %.2f). The "
             "source is probably compressed enough to erase gravel detail, which "
             "weakens water detection — it relies on losing that texture. Prefer a "
-            "higher-bitrate source, or raise preprocess.reproject.crf quality.",
-            tex_med,
+            "higher-bitrate source, or raise preprocess.reproject.crf quality. "
+            "(Logged once per run.)", tex_med,
         )
 
 
@@ -312,11 +408,13 @@ def analyse_surface(frame, road_mask, cfg) -> SurfaceMap:
     if not road.any():
         empty = np.zeros(frame.shape[:2], dtype=bool)
         return SurfaceMap(water=empty, mud=empty.copy(), dry=empty.copy(),
-                          occlusion=empty.copy(), road_area_px=0.0)
+                          occlusion=empty.copy(), road_area_px=0.0,
+                          plausibility=SurfacePlausibility("unknown", "no road region"))
 
     feats = compute_features(frame, int(sc.get("texture_ksize", 7)))
     stats, source = _baseline_stats(feats, road, road_mask.baseline)
-    _warn_uniform_contamination(stats, cfg)
+    plausibility = assess_plausibility(feats, road, stats, cfg)
+    _warn_plausibility(plausibility)
     _warn_featureless_baseline(stats)
     # Hysteresis: detect on a heavily smoothed map (noise-robust, but it erodes
     # the edges of small patches), then recover true extent by growing into a
@@ -351,4 +449,5 @@ def analyse_surface(frame, road_mask, cfg) -> SurfaceMap:
         water=water, mud=mud, dry=road & ~occlusion, occlusion=occlusion,
         road_area_px=float(road.sum()), water_px=float(water.sum()),
         mud_px=float(mud.sum()), baseline_source=source,
+        plausibility=plausibility,
     )

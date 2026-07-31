@@ -97,6 +97,11 @@ def _clip(a):
     return np.clip(a, 0, 255).astype(np.uint8)
 
 
+def _filled(shape, bgr, sigma):
+    """A full-size uint8 layer of one colour plus texture noise."""
+    return _clip(np.asarray(bgr, dtype=np.float32) + _noise(shape, sigma))
+
+
 def car_road_mask(cam: CarCamera) -> np.ndarray:
     """Exact road region, filled row by row from the ground-plane projection."""
     mask = np.zeros((cam.height, cam.width), dtype=bool)
@@ -282,6 +287,65 @@ def _open_writer(path: Path, w: int, h: int, fps: float):
     return VideoWriter(path, w, h, fps, crf=8, preset="medium")
 
 
+def make_scenario_video(path: Path, scenario: str, n_frames: int = 60,
+                        fps: float = 15.0, speed_mps: float = 4.0) -> Path:
+    """Footage the validity gate is *supposed* to refuse.
+
+    Each scenario reproduces one of the conditions the requirement calls out, so the
+    gates can be verified against video rather than only against hand-built contexts:
+
+      flooded    — water covering essentially the whole carriageway
+      muddy      — mud covering the whole carriageway
+      off_track  — the vehicle has left the road; no road ahead of the bonnet
+      no_road    — pointed at open ground, no carriageway at all
+      stationary — parked; every frame is a near-duplicate
+      glare      — blown-out sun flare
+      night      — too dark to assess
+    """
+    cam = CarCamera()
+    dt = 1.0 / fps
+    writer = _open_writer(path, cam.width, cam.height, fps)
+    # A genuinely parked vehicle produces near-identical frames: the scene texture is
+    # fixed and only sensor noise changes. Re-rendering the texture each frame would
+    # fake motion that isn't there and the stationary gate would (correctly) not fire.
+    frozen = (render_car_frame(cam, [Defect("pothole", -0.8, 12.0, 0.4, 0.35)])
+              .astype(np.float32) if scenario == "stationary" else None)
+    try:
+        for i in range(n_frames):
+            travelled = 0.0 if scenario == "stationary" else speed_mps * dt * i
+            defects = [Defect("pothole", -0.8, 12.0 - travelled, 0.4, 0.35)]
+            if frozen is not None:
+                frame = frozen + RNG.normal(0.0, 1.5, frozen.shape).astype(np.float32)
+            else:
+                frame = render_car_frame(cam, defects).astype(np.float32)
+
+            shape = (cam.height, cam.width)
+            if scenario in ("flooded", "muddy"):
+                road = car_road_mask(cam)
+                bgr = WATER_BGR if scenario == "flooded" else MUD_BGR
+                sigma = 0.6 if scenario == "flooded" else 2.5
+                cover = _filled(shape, bgr, sigma)
+                frame[road] = cover[road]
+            elif scenario == "off_track":
+                # Verge fills the lower frame: the road is off to one side and does
+                # not reach the vehicle.
+                cut = int(0.62 * cam.height)
+                frame[cut:, :] = _filled(shape, VERGE_BGR, VERGE_SIGMA)[cut:, :]
+            elif scenario == "no_road":
+                frame = _filled(shape, VERGE_BGR, VERGE_SIGMA).astype(np.float32)
+                frame[: int(cam.horizon_row), :] = np.asarray(SKY_BGR, np.float32)
+            elif scenario == "glare":
+                frame *= 3.2
+            elif scenario == "night":
+                frame *= 0.06
+
+            writer.write(_clip(frame))
+    finally:
+        writer.close()
+    print(f"  {scenario:<11} -> {path}")
+    return path
+
+
 def degrade(src: Path, dst: Path) -> Path:
     """A deliberately poor copy: soft, noisy, low contrast, some blown frames.
 
@@ -350,9 +414,12 @@ def main(argv=None) -> int:
     p.add_argument("--out", default="data/raw", help="output directory")
     p.add_argument("--frames", type=int, default=120)
     p.add_argument("--fps", type=float, default=15.0)
-    p.add_argument("--only", choices=["car", "drone", "equirect"], default=None)
+    p.add_argument("--only", choices=["car", "drone", "equirect", "scenarios"],
+                   default=None)
     p.add_argument("--degraded", action="store_true",
                    help="also write a low-quality copy of the car view")
+    p.add_argument("--scenarios", action="store_true",
+                   help="write clips the validity gate should refuse to assess")
     args = p.parse_args(argv)
 
     out = Path(args.out)
@@ -368,6 +435,13 @@ def main(argv=None) -> int:
         to_equirect(car, out / "synthetic_road_equirect.mp4")
     if args.degraded:
         degrade(car, out / "synthetic_road_car_degraded.mp4")
+
+    if args.scenarios or args.only == "scenarios":
+        print("Scenarios the validity gate should refuse:")
+        for name in ("flooded", "muddy", "off_track", "no_road", "stationary",
+                     "glare", "night"):
+            make_scenario_video(out / f"scenario_{name}.mp4", name,
+                                n_frames=min(60, args.frames), fps=args.fps)
 
     print("\nRun the pipeline on these with the matching viewpoint:")
     print("  python run.py --input data/raw/synthetic_road_car.mp4 --view car_flat")

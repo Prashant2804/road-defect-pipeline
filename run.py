@@ -186,6 +186,86 @@ def _cmd_roadseg(args):
     print("Green outline = road surface; hatched blue = water, brown = mud.")
 
 
+def _cmd_validity(args):
+    """Print the per-frame assessability timeline — which frames are usable, and why not."""
+    import cv2
+
+    from rdd.geometry.autocal import calibrate_video
+    from rdd.quality.enhance import enhance_frame, resolve_spec
+    from rdd.quality.metrics import assess_video, judge, measure_frame
+    from rdd.roadseg.base import build_segmenter
+    from rdd.surface.condition import analyse_surface
+    from rdd.utils.logging import setup_logging
+    from rdd.validity.checker import ValidityChecker
+    from rdd.viewpoint import resolve_view
+
+    setup_logging()
+    cfg = _load(args)
+    if args.no_traffic:
+        cfg.set_path("validity.traffic.enabled", False)
+    quality = assess_video(args.input, cfg)
+    spec = resolve_spec(cfg, quality)
+
+    cap = cv2.VideoCapture(str(args.input))
+    if not cap.isOpened():
+        raise SystemExit(f"Cannot open {args.input}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    view = resolve_view(cfg, w, h)
+    calib = calibrate_video(args.input, cfg, view=view, spec=spec)
+    seg = build_segmenter(cfg, view)
+    checker = ValidityChecker(cfg, camera=calib.camera, zones=calib.zones)
+
+    print(f"\n{'frame':>7} {'t(s)':>7}  {'verdict':<12} reasons")
+    print("-" * 78)
+    rows, idx = [], -1
+    while True:
+        ok, raw = cap.read()
+        if not ok:
+            break
+        idx += 1
+        if idx % max(1, args.stride):
+            continue
+        frame = enhance_frame(raw, spec) if spec.enabled else raw
+        road = seg.segment(frame)
+        surf = analyse_surface(frame, road, cfg)
+        q = judge(measure_frame(raw, idx), quality)
+        v = checker.check(idx, idx / fps, frame, road=road, surface=surf, quality=q)
+        rows.append(v)
+        if idx % max(1, args.every) == 0:
+            state = "NOT ASSESSED" if v.blocked else ("degraded" if v.degraded else "ok")
+            detail = "; ".join(v.block_reasons or v.degrade_reasons) or "-"
+            print(f"{idx:>7} {idx / fps:>7.2f}  {state:<12} {detail[:52]}")
+    cap.release()
+
+    s = checker.stats.summary()
+    print("-" * 78)
+    print(f"assessable      : {s['frames_assessable']}/{s['frames']} "
+          f"({100 * s['frame_coverage']:.1f}% of frames)")
+    print(f"degraded        : {s['frames_degraded']}")
+    if s["blocked_by_gate"]:
+        print("excluded by     :")
+        for gate, n in s["blocked_by_gate"].items():
+            print(f"   {gate:<20} {n:>5} frames")
+    if s["degraded_by_gate"]:
+        print("degraded by     :")
+        for gate, n in s["degraded_by_gate"].items():
+            print(f"   {gate:<20} {n:>5} frames")
+    print(f"longest gap     : {s['longest_unassessed_run_frames']} frames")
+
+    if args.json:
+        import json
+
+        path = Path(args.json)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(
+            {"summary": s, "frames": [v.as_dict() for v in rows]}, indent=2),
+            encoding="utf-8")
+        print(f"per-frame verdicts -> {path}")
+
+
 def _cmd_train(args):
     from rdd.model.train import train
     from rdd.utils.logging import setup_logging
@@ -298,6 +378,17 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--n", type=int, default=8, help="how many preview frames")
     _common(sr)
     sr.set_defaults(func=_cmd_roadseg)
+
+    sv = sub.add_parser("validity", help="per-frame assessability timeline")
+    sv.add_argument("--input", required=True)
+    sv.add_argument("--every", type=int, default=5, help="print every Nth frame")
+    sv.add_argument("--stride", type=int, default=1,
+                    help="check every Nth frame (traffic detection is slow on CPU)")
+    sv.add_argument("--no-traffic", action="store_true",
+                    help="skip COCO vehicle detection (much faster)")
+    sv.add_argument("--json", default=None, help="write per-frame verdicts here")
+    _common(sv)
+    sv.set_defaults(func=_cmd_validity)
 
     st = sub.add_parser("train", help="fine-tune on labels (segment-split)")
     st.add_argument("--labels", default=None)

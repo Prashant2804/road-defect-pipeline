@@ -195,7 +195,7 @@ def _crop_figure(c: dict) -> str:
 
 def write_report(result, counter, severity, cfg, out_dir: Path,
                  rectified_video: Path | None = None, gps=None,
-                 view=None, quality=None) -> Path:
+                 view=None, quality=None, calibration=None) -> Path:
     out_dir = Path(out_dir)
     fmt = cfg.get_path("report.format", "html")
     crops = _extract_crops(result.annotated_video, counter, severity, cfg, out_dir)
@@ -233,6 +233,11 @@ def write_report(result, counter, severity, cfg, out_dir: Path,
         "roadseg": result.roadseg.summary(),
         "quality": quality.summary() if quality else {},
         "enhance": result.enhance_fingerprint,
+        "out_of_zone_rejected": counter.rejected_out_of_zone,
+        "validity": result.validity.summary(),
+        "camera": (calibration.camera.describe() if calibration else ""),
+        "zones": (calibration.zones.summary() if calibration else {}),
+        "unachievable": (calibration.zones.unachievable() if calibration else []),
     }
 
     if fmt == "pdf":
@@ -257,12 +262,47 @@ def _write_html(ctx, out_dir: Path) -> Path:
         "<p>GPS: none — frame timestamps used as the location proxy.</p>"
     )
     skip_note = (
-        f"<li>{ctx['frames_skipped']} of {ctx['frames_total']} frames were too poor "
-        f"to analyse ({', '.join(f'{k}: {v}' for k, v in ctx['skip_reasons'].items())}) "
+        f"<li>{ctx['frames_skipped']} of {ctx['frames_total']} frames were "
+        f"<strong>not assessed</strong> "
+        f"({', '.join(f'{k}: {v}' for k, v in ctx['skip_reasons'].items())}) "
         f"— they are banner-marked in the annotated video.</li>"
         if ctx["frames_skipped"] else
-        f"<li>All {ctx['frames_total']} frames passed the quality check.</li>"
+        f"<li>All {ctx['frames_total']} frames were assessable.</li>"
     )
+    val = ctx["validity"]
+    cov = val.get("frame_coverage", 1.0) * 100
+    cov_class = "bad" if cov < 50 else "warn" if cov < 80 else "ok"
+    excl = val.get("blocked_by_gate") or {}
+    coverage_block = f"""
+<div class="{cov_class}">
+<strong>Route coverage: {cov:.1f}% of frames were assessed.</strong>
+{"Excluded: " + ", ".join(f"{k} ({v} frames)" for k, v in excl.items()) + "."
+ if excl else "No frames were excluded."}
+{f" Longest unbroken unassessed stretch: {val['longest_unassessed_run_frames']} frames."
+ if val.get("longest_unassessed_run_frames", 0) >= 30 else ""}
+Defect counts and precision below apply <em>only</em> to the assessed portion —
+excluded frames were never inspected, and are not evidence of intact road.
+</div>"""
+
+    zone_rows = "".join(
+        f"<tr><td>{z['class']}</td><td class='n'>{z['required_gsd_mm']}</td>"
+        f"<td class='n'>{z['zone_m'][0]}–{z['zone_m'][1]}</td>"
+        f"<td>{'yes' if z['achievable'] else '<strong>NO</strong>'}</td></tr>"
+        for z in ctx["zones"].values()
+    )
+    zone_block = f"""
+<h2>Assessment zones</h2>
+<p class="sub">{ctx['camera']}</p>
+<table><tr><th>Class</th><th>Needs (mm/px)</th><th>Assessed range (m)</th>
+<th>Achievable</th></tr>{zone_rows}</table>
+<div class="note">Each class is only assessed where this camera can resolve it.
+Outside its range the class is <em>not assessed</em> — a hairline crack beyond the
+resolution limit is below the sampling floor, so finding nothing there is not
+evidence of intact pavement. {ctx['out_of_zone_rejected']} detections were rejected
+for falling outside their class's zone.
+{"<br><strong>Not achievable with this camera: " + ", ".join(ctx['unachievable'])
+ + ".</strong> Higher resolution or a lower/steeper mount is the only fix."
+ if ctx['unachievable'] else ""}</div>""" if zone_rows else ""
     unassessable_pct = ctx["unassessable_frac"] * 100
     banner_class = "bad" if unassessable_pct >= 20 else "warn" if unassessable_pct >= 5 else "ok"
 
@@ -299,6 +339,8 @@ observed road; the worst single frame was {ctx['worst_frame_frac'] * 100:.0f}% o
 Defects underneath standing water or mud are invisible, so an absence of detections
 there is <em>not</em> evidence of an intact road.
 </div>
+{coverage_block}
+{zone_block}
 
 <h2>Counts by class</h2>
 <table><tr><th>Class</th><th>Unique</th><th>Of which indeterminate</th></tr>{rows}</table>

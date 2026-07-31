@@ -50,6 +50,130 @@ view:
       sensor_width_mm: null
 
 # ---------------------------------------------------------------------------
+# 0b. GEOMETRY — the calibrated bridge between pixels and the road plane
+# ---------------------------------------------------------------------------
+# Everything metric depends on this: defect area in m², crack width in mm,
+# longitudinal-vs-transverse classification, edge loss, texture at fixed scale.
+# A wrong camera height silently rescales every measurement, so measure it.
+geometry:
+  camera:
+    # Intrinsics. Give fx/fy from a checkerboard calibration if you have one;
+    # otherwise h_fov_deg is a usable approximation (square pixels, centred
+    # principal point). Typical dashcam h_fov is 100-140° (marketing "170°" is
+    # usually diagonal, not horizontal).
+    fx: null
+    fy: null
+    cx: null
+    cy: null
+    h_fov_deg: 78.0
+    # Extrinsics. height_m MUST be measured — it scales all ground distances.
+    height_m: 1.30                 # camera height above the road surface
+    pitch_deg: 5.0                 # downward tilt; > 0 looks toward the road
+    yaw_deg: 0.0
+    # Dashcams get knocked and remounted, so recover pitch/yaw per clip from the
+    # vanishing point rather than trusting the numbers above. Camera HEIGHT cannot
+    # be recovered this way — the VP does not depend on it.
+    auto_pitch_from_vp: true
+    vp_sample_frames: 40
+    max_auto_pitch_correction_deg: 12.0
+
+  zones:
+    # Assessment zones are DERIVED from the resolution each class needs, not typed
+    # in. Outside its zone a class is reported "not assessed" rather than "absent" —
+    # a hairline crack at 25 m is below the sampling limit, so finding nothing there
+    # is not evidence of intact pavement.
+    default_gsd_m: 0.020
+    required_gsd_m:                # metres per pixel needed, per class
+      pothole: 0.020
+      longitudinal_crack: 0.005
+      transverse_crack: 0.005
+      alligator_crack: 0.008
+      edge_damage: 0.020
+      ravelling: 0.005
+      rutting: 0.015
+      drainage_issue: 0.030
+      water_logging: 0.030
+    min_distance_m: 0              # 0 -> nearest ground actually visible
+    max_distance_m: 0              # 0 -> furthest ground actually visible
+
+# ---------------------------------------------------------------------------
+# 0c. VALIDITY — refuse to assess frames where the road cannot be seen
+# ---------------------------------------------------------------------------
+# Two jobs. (1) Honesty: never emit a defect list for a frame where the road is
+# buried, unlocatable, or the vehicle is off the carriageway — a reader cannot
+# distinguish "inspected and clean" from "never inspected". (2) Precision: most
+# false positives come from degraded frames, so this is the cheapest precision
+# lever available and the only one needing no training data.
+# Tightening these gates raises precision and lowers route coverage. Both numbers
+# are reported; a precision figure over an undisclosed subset means nothing.
+validity:
+  enabled: true
+
+  road_found:
+    min_confidence: 0.25           # road mask confidence below this -> block
+    min_coverage: 0.04             # road smaller than this fraction of frame -> block
+    degrade_on_fallback: true      # prior-only mask is geometry, not observation
+
+  road_buried:
+    block_above_frac: 0.60         # water+mud over this much of the road -> block
+    degrade_above_frac: 0.25
+
+  plausibility:
+    # Catches what road_buried structurally cannot. That gate measures water/mud
+    # RELATIVE to the road baseline, so when a contaminant covers the ENTIRE
+    # carriageway it becomes the baseline and the road reads as clean and dry.
+    # This gate uses absolute appearance to catch that case (see
+    # surface.plausibility for the thresholds).
+    enabled: true
+
+  off_track:
+    # If the vehicle is ON a road, the surface immediately ahead is road. A mask
+    # that stops short means we are beside it, or looking at something else.
+    bottom_band_frac: 0.08
+    min_bottom_fill: 0.12
+    max_centre_offset: 0.28        # road this far off centre -> off the travelled way
+
+  egomotion:
+    min_flow_px: 0.6               # below this the vehicle is stopped -> block
+    block_reverse: true            # flow contracting toward the VP = reversing
+    max_yaw_px: 14.0               # sharp turn -> degrade
+    max_pitch_px: 10.0             # camera pitching invalidates distances -> degrade
+    max_corners: 300
+    quality_level: 0.01
+    min_distance: 12
+    work_width: 480
+
+  traffic:
+    # The commonest dashcam occluder is the vehicle ahead. Vehicles are COCO
+    # classes, so this needs NO training data.
+    enabled: true
+    model: "yolo11n.pt"            # small COCO detector, separate from the defect model
+    conf: 0.35
+    imgsz: 640
+    stride: 3                      # detect every N frames; vehicles don't teleport
+    dilate_frac: 0.01              # grow boxes to catch under-vehicle contact shadow
+    block_above_zone_frac: 0.55    # too little road left -> block the frame
+
+  image:
+    max_glare_frac: 0.12           # blown highlights (sun / wet-road flare) -> block
+    min_mean_luma: 0.10            # night / tunnel -> block
+    degrade_below_luma: 0.18
+
+  windscreen:
+    # Dirt, rain spots, wiper arc and the bonnet are FIXED to the camera, so they
+    # are perfectly stable false-positive generators that no confidence threshold
+    # removes. Found by temporal invariance: real scene content streams past.
+    enabled: true
+    min_frames: 30                 # motion frames needed before trusting the estimate
+    max_temporal_std: 5.0          # below this a pixel never changes -> static
+    alpha: 0.08
+    work_width: 320
+    block_above_frac: 0.35
+
+  zone:
+    min_usable_px: 2000            # assessable road remaining after all exclusions
+
+# ---------------------------------------------------------------------------
 # 1. INGEST — accept video, detect format, extract telemetry
 # ---------------------------------------------------------------------------
 ingest:
@@ -278,12 +402,26 @@ surface:
   min_blob_area_frac: 0.002        # ignore specks below this fraction of road area
   close_px: 3
 
-  # If the WHOLE road is covered, the covering becomes the baseline and relative
-  # detection finds nothing. These absolute values only trigger a warning.
-  absolute_mud_hint:
-    min_a: 140.0
-    min_b: 140.0
-    max_texture: 4.0
+  # ABSOLUTE appearance thresholds — the one deliberate exception to the
+  # relative-statistics rule above. If the WHOLE road is covered, the covering
+  # becomes the baseline and relative detection is blind to it by construction.
+  # These catch that case and feed validity.plausibility, which BLOCKS the frame.
+  # Never used to grade severity. Set loose on purpose: absolute values transfer
+  # poorly between cameras and soil types.
+  plausibility:
+    # Vegetation -> the vehicle is not on a carriageway at all.
+    veg_hue_lo: 35.0               # OpenCV hue scale, 0-179
+    veg_hue_hi: 90.0
+    veg_min_saturation: 60.0
+    veg_min_texture: 6.0
+    # Whole surface reads as wet soil.
+    mud_min_a: 140.0
+    mud_min_b: 145.0
+    mud_max_texture: 4.0
+    # Whole surface reads as standing water: specular, so texture is gone.
+    water_max_texture: 2.0
+    water_min_l: 170.0
+    water_max_saturation: 25.0
 
 # ---------------------------------------------------------------------------
 # 6. ANNOTATE — SAM-assisted labeling helper (not used at inference)

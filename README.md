@@ -48,13 +48,14 @@ which is what a condition survey actually reports.
 ## Pipeline
 
 ```
-ingest ─→ viewpoint ─→ reproject ─→ quality ─→ sampling ─→ scale
-                                                              │
-   ┌──────────────────────────────────────────────────────────┘
+ingest ─→ viewpoint ─→ reproject ─→ quality ─→ sampling ─→ geometry ─→ scale
+                                                                         │
+   ┌─────────────────────────────────────────────────────────────────────┘
    ↓
-inference ─→ ROAD SEGMENTATION ─→ SURFACE CONDITION ─→ detect + track + gate
-                                                              │
-                                        severity (abstains) ──┴─→ report
+inference ─→ ROAD SEG ─→ SURFACE ─→ VALIDITY GATE ─→ detect + track + gate
+                                          │                    │
+                          (blocked: no detections)             │
+                                             severity (abstains) ─→ report
 ```
 
 | Stage | What it does | Key output |
@@ -64,10 +65,12 @@ inference ─→ ROAD SEGMENTATION ─→ SURFACE CONDITION ─→ detect + trac
 | `reproject` | 360→flat at native angular resolution (skipped if already flat) | `rectified.mp4` |
 | `quality` | learn the clip's sharpness/noise distribution; derive enhancement | `QualityProfile`, `EnhanceSpec` |
 | `sampling` | frames for labeling, by distance travelled; skips unusable frames | `data/rectified/*.jpg` |
+| `geometry` | calibrate the camera from the vanishing point; derive per-class **assessment zones** | `CameraModel`, `ZoneSet` |
 | `scale` | metres per pixel (drone GSD, or IPM Jacobian for car) | `AreaScaler` |
 | `roadseg` | segment the drivable surface | road mask + appearance baseline |
-| `surface` | classify water / mud / dry → **occlusion mask** | `SurfaceMap` |
-| `detect_track` | YOLO-seg + BoT-SORT, **gated to the road** | tracks, occlusion flags |
+| `surface` | classify water / mud / dry → **occlusion mask** + plausibility | `SurfaceMap` |
+| `validity` | **decide whether the frame may be assessed at all** | `FrameVerdict`, route coverage |
+| `detect_track` | YOLO-seg + BoT-SORT, **gated to the road and to each class's zone** | tracks, occlusion flags |
 | `severity` | absolute m² bins where scale is known; **abstains** under occlusion | `SeverityReport` |
 | `report` | CSV / JSON / HTML / PDF | `defects.csv`, `report.html` |
 
@@ -121,7 +124,7 @@ Outputs land in `out/<run.name>/`:
 
 | File | Contents |
 |---|---|
-| `annotated.mp4` | road outline, hatched water/mud, masks, IDs, unique-count HUD |
+| `annotated.mp4` | road outline, hatched water/mud, masks, IDs, HUD; unassessed frames banner-marked |
 | `defects.csv` | one row per **unique** defect, incl. `area_m2`, `assessable`, `occluded_frac` |
 | `summary.json` | unique counts, indeterminate counts, full per-stage pipeline summary |
 | `report.html` | headline counts **and** unassessable-% banner, severity basis, coverage |
@@ -203,6 +206,75 @@ discards real defects.
 
 ---
 
+## Refusing to assess: the validity gate
+
+The rule is that when the road cannot be seen, the pipeline produces **no
+detections** and says why. A defect list from a frame where the road is buried is
+worse than nothing, because a reader cannot tell "inspected and clean" from "never
+inspected".
+
+This is also the cheapest **precision** lever available, and the only one that needs
+no training data: almost all false positives come from degraded frames. Tightening
+the gates raises precision and lowers coverage — both numbers are reported, because
+a precision figure over an undisclosed subset of the route means nothing.
+
+| Gate | Blocks when | Action |
+|---|---|---|
+| `road_found` | road mask unconfident or implausibly small | BLOCK (prior-only → DEGRADE) |
+| `surface_plausible` | the whole surface reads as water / mud / vegetation | BLOCK |
+| `road_buried` | water+mud over >60% of the road | BLOCK (>25% → DEGRADE) |
+| `off_track` | road doesn't reach the bonnet, or is far off centre | BLOCK |
+| `ego_motion` | stationary, or reversing (flow contracting toward the VP) | BLOCK (sharp turn / pitching → DEGRADE) |
+| `traffic` | vehicles cover >55% of the assessment zone | BLOCK (otherwise MASK them out) |
+| `image_condition` | sun glare, night, tunnel | BLOCK (dusk → DEGRADE) |
+| `windscreen` | dirt / rain / wiper across the lens | BLOCK (small → MASK) |
+| `assessment_zone` | too little assessable road left after all exclusions | BLOCK |
+
+Three actions, deliberately distinguished: **BLOCK** refuses the frame, **DEGRADE**
+assesses it but marks results low-confidence, **MASK** removes a region (a car ahead)
+and keeps the rest. Blanket-blocking any frame containing a vehicle would discard
+most of a real survey.
+
+`surface_plausible` closes a structural blind spot in `road_buried`. That gate
+measures water and mud *relative to the road baseline*, which works for a puddle on
+visible road — but when a contaminant covers the **entire** carriageway it *becomes*
+the baseline, every pixel matches it, and the relative measurement reports a clean,
+dry road. So this one gate uses **absolute** appearance, the single deliberate
+exception to the relative-statistics rule used everywhere else. It is set loose and
+only ever used to catch the catastrophic case, never to grade severity.
+
+```bash
+python run.py validity --input dashcam.mp4 --view car_flat --no-traffic --stride 4
+```
+
+Prints the per-frame verdict timeline and a route summary. Verified on purpose-built
+clips (`tools/make_synthetic_road.py --scenarios`): flooded, mud-covered, off-track
+and no-road footage all yield **0% assessable**, while clean footage yields 100%.
+
+## Assessment zones: where each class can actually be seen
+
+A hairline crack is a few millimetres wide. At 25 m ahead one pixel of a 1080p
+dashcam covers several centimetres of road *along* the direction of travel, so the
+crack is not faint — it is **absent**, below the sampling limit. Recorded as "no
+defect" that is a false negative dressed as a clean road.
+
+So each class gets a distance band derived from a required ground resolution, and
+anything outside it is reported **not assessed**. The bands are computed from the
+camera model, not typed in — change the mount height or the resolution and they move
+on their own. The same bands raise precision, since far-field pixels are where
+aliasing and compression noise invent thin-line detections.
+
+Ground resolution is strongly anisotropic in a forward view: at 15 m a pixel may span
+12 mm across the road but 90 mm along it. Both are computed and the **worst** is used
+for the budget, because averaging them would hide the direction that actually limits
+transverse crack detection.
+
+Camera pitch and yaw are recovered per clip from the **vanishing point** (fitted from
+the road-mask edges), because dashcams get knocked and remounted and a 2° pitch error
+is a large range error. Camera **height must be measured** — it does not affect the
+vanishing point and cannot be recovered this way, and it linearly scales every
+distance and area.
+
 ## How mud & water detection works
 
 Every cue is an **illumination invariant**, because the hardest false positive in
@@ -281,6 +353,7 @@ than looking like a modelling problem.
 python run.py preprocess --input video.mp4              # reproject + quality + sampling
 python run.py quality    --input video.mp4 --csv q.csv  # measure only
 python run.py roadseg    --input video.mp4 --n 8        # mask previews for tuning
+python run.py validity   --input video.mp4 --no-traffic # per-frame assessability
 python run.py annotate   --frames data/rectified        # which frames to label first
 python run.py train      --labels data/labels           # fine-tune (segment-safe split)
 python run.py infer      --input rectified.mp4 --weights best.pt
@@ -334,6 +407,12 @@ India subset, or a Roboflow road-defect model), then fine-tune.
 | `roadseg.backend` | `classical` / `geometric` / `sam` / `none` |
 | `roadseg.stride` | recompute the road mask every N frames (speed) |
 | `roadseg.gating.mode` | `gate` (post-filter) / `mask` (pre-mask) / `off` |
+| `geometry.camera.height_m` | **measure this** — it scales every distance and area |
+| `geometry.camera.auto_pitch_from_vp` | recover pitch/yaw per clip from the vanishing point |
+| `geometry.zones.required_gsd_m` | resolution each class needs → its assessment range |
+| `validity.enabled` | master switch for refusing unassessable frames |
+| `validity.road_buried.block_above_frac` | water/mud coverage that blocks a frame |
+| `validity.traffic.enabled` | mask vehicles out of the road region (COCO, no labels) |
 | `surface.occlusion_policy` | `abstain` / `flag` / `exclude` |
 | `surface.occluder_classes` | classes that *are* the occluder (`water_logging`) |
 | `severity.absolute_bins_m2` | physical severity thresholds when scale is known |
@@ -350,6 +429,10 @@ India subset, or a Roboflow road-defect model), then fine-tune.
   measurable. Amber-outlined in the crops, `assessable=no` in the CSV.
 - **Unassessable %** — the fraction of road surface obscured. If this is high, the
   low defect count is a statement about visibility, not about road condition.
+- **Route coverage** — the fraction of *frames* that were assessed at all. Excluded
+  frames were never inspected; they are not evidence of intact road.
+- **Assessment zones** — the range over which each class was actually assessable.
+  Beyond it, that class was not assessed.
 - **Severity basis** — `absolute_m2` is comparable between runs; `relative_px` is
   not, and says so.
 
@@ -361,11 +444,14 @@ India subset, or a Roboflow road-defect model), then fine-tune.
 python -m pytest tests/ -q
 ```
 
-95 tests. The ones that matter most encode the design invariants: hole-filling
+205 tests. The ones that matter most encode the design invariants: hole-filling
 keeps defects inside the road mask; a multiplicative shadow is not mud; a clean
 road reports ~0% occluded; water-logging is never occluded by itself; a defect
 under water is never severity-scored; absolute severity is comparable across runs
-while relative severity is not.
+while relative severity is not; flooded/mud-covered/off-track clips yield zero
+detections with a stated reason; a fully-covered road is caught by absolute
+plausibility where relative measurement is blind; and clean footage stays 100%
+assessable, so the gates are not merely blocking everything.
 
 ## Reproducibility
 
@@ -386,9 +472,11 @@ src/rdd/
   utils/                   logging, device, ffmpeg (+VideoWriter), geo, manifest
   ingest/                  format detect, .insv->equirect, GPS/telemetry
   preprocess/              reproject (360->flat), ipm (area Jacobian), scale, sampling
+  geometry/                calibration (ground model, GSD), autocal (VP), zones
   quality/                 metrics (adaptive thresholds), enhance (shared spec)
   roadseg/                 ops, geometric prior, classical, temporal, sam
-  surface/                 water/mud condition -> occlusion mask
+  surface/                 water/mud condition -> occlusion mask + plausibility
+  validity/                frame verdict, gates, ego-motion, traffic occlusion
   annotate/                SAM-assisted labeling + active-learning frame picker
   model/                   YOLO loader (fallback), segment split, training
   depth/                   optional depth backend + severity (with abstention)

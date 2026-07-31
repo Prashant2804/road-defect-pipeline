@@ -31,6 +31,8 @@ from ..surface.condition import SurfaceStats, analyse_surface
 from ..utils.device import resolve_device
 from ..utils.geo import GpsTrack
 from ..utils.logging import get_logger
+from ..validity.checker import ValidityChecker
+from ..validity.verdict import ValidityStats
 from .counter import TrackObservation, UniqueCounter
 from .render import draw_frame, draw_hud, draw_quality_banner
 
@@ -79,9 +81,11 @@ class InferenceResult:
     quality_skip_reasons: dict[str, int] = field(default_factory=dict)
     surface: SurfaceStats = field(default_factory=SurfaceStats)
     roadseg: RoadSegStats = field(default_factory=RoadSegStats)
+    validity: ValidityStats = field(default_factory=ValidityStats)
     scale_note: str = ""
     enhance_fingerprint: str = ""
     gating_mode: str = "gate"
+    calibration: dict = field(default_factory=dict)
 
     def summary(self) -> dict:
         return {
@@ -90,11 +94,14 @@ class InferenceResult:
             "frames_skipped_quality": self.frames_skipped_quality,
             "quality_skip_reasons": dict(self.quality_skip_reasons),
             "detections_rejected_off_road": self.counter.rejected_off_road,
+            "detections_rejected_out_of_zone": self.counter.rejected_out_of_zone,
             "gating_mode": self.gating_mode,
             "enhance_fingerprint": self.enhance_fingerprint,
             "ground_scale": self.scale_note,
             "roadseg": self.roadseg.summary(),
             "surface": self.surface.summary(),
+            "validity": self.validity.summary(),
+            "calibration": self.calibration,
         }
 
 
@@ -125,11 +132,25 @@ def _overlap(det_mask, other) -> float:
     return float((det_mask & other).sum()) / total
 
 
+def _without(road, exclude):
+    """A copy of the road mask with an excluded region removed.
+
+    Returns a shallow copy so the segmenter's own (temporally smoothed) mask is not
+    mutated — otherwise a vehicle in one frame would carve a permanent hole in the
+    road mask for the rest of the clip.
+    """
+    import copy
+
+    trimmed = copy.copy(road)
+    trimmed.mask = road.mask & ~exclude
+    return trimmed
+
+
 def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                   out_dir: Path | None = None, view=None,
                   profile: QualityProfile | None = None,
                   spec: EnhanceSpec | None = None,
-                  scaler=None) -> InferenceResult:
+                  scaler=None, calibration=None) -> InferenceResult:
     import cv2
 
     from ..utils.ffmpeg import VideoWriter
@@ -168,6 +189,10 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
     segmenter = build_segmenter(cfg, view)
     segmenter.reset()
 
+    camera = getattr(calibration, "camera", None)
+    zones = getattr(calibration, "zones", None)
+    validity = ValidityChecker(cfg, camera=camera, zones=zones)
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video for inference: {video_path}")
@@ -198,10 +223,8 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
             frame_idx += 1
             result.frames_total += 1
 
-            usable, reasons = True, ()
-            if drop_unusable:
-                q = judge(measure_frame(raw, frame_idx), profile)
-                usable, reasons = q.usable, q.reasons
+            quality = judge(measure_frame(raw, frame_idx), profile) \
+                if drop_unusable else None
 
             frame = enhance_frame(raw, spec) if spec.enabled else raw
             fh, fw = frame.shape[:2]
@@ -211,15 +234,7 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                     crf=int(rc.get("crf", 18)), preset=str(rc.get("preset", "medium")),
                 )
 
-            if not usable:
-                result.frames_skipped_quality += 1
-                for r in reasons:
-                    key = r.split("(")[0]
-                    result.quality_skip_reasons[key] = \
-                        result.quality_skip_reasons.get(key, 0) + 1
-                writer.write(draw_quality_banner(frame.copy(), reasons))
-                continue
-
+            t = frame_idx / src_fps
             if road is None or frame_idx % roadseg_stride == 0:
                 road = segmenter.segment(frame)
             result.roadseg.update(road)
@@ -228,6 +243,33 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                 surf = analyse_surface(frame, road, cfg)
             if surf is not None:
                 result.surface.update(surf)
+
+            # The validity gate decides whether this frame may be assessed at all.
+            # It runs after road/surface because it consumes their outputs, and
+            # before detection because a blocked frame must produce no detections.
+            step_m = 0.0
+            if gps.has_data:
+                d_now = gps.distance_at_time(t)
+                d_prev = gps.distance_at_time((frame_idx - 1) / src_fps)
+                if d_now is not None and d_prev is not None:
+                    step_m = max(0.0, d_now - d_prev)
+            verdict = validity.check(frame_idx, t, frame, road=road, surface=surf,
+                                     quality=quality, distance_m=step_m)
+
+            if not verdict.assessable:
+                result.frames_skipped_quality += 1
+                for gate in verdict.block_gates:
+                    result.quality_skip_reasons[gate] = \
+                        result.quality_skip_reasons.get(gate, 0) + 1
+                out = draw_frame(frame.copy(), [], class_names, cfg,
+                                 road=road, surface=surf)
+                writer.write(draw_quality_banner(out, verdict.block_reasons))
+                continue
+
+            # Regions the gate wants excluded (vehicles, windscreen dirt) are
+            # removed from the road mask, so they cannot host a detection.
+            if verdict.exclude_mask is not None:
+                road = _without(road, verdict.exclude_mask)
 
             det_input = frame
             if gating_mode == "mask":
@@ -243,12 +285,11 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
             result.frames_detected += 1
             r = results[0] if results else None
 
-            t = frame_idx / src_fps
             fix = gps.at_time(t) if gps.has_data else None
             detections = _collect(
                 r, fh, fw, road, surf, counter, scaler, class_names,
                 frame_idx, t, fix, gating_mode, min_road_overlap,
-                min_gate_confidence, occlusion_threshold,
+                min_gate_confidence, occlusion_threshold, zones,
             )
 
             out = draw_frame(frame.copy(), detections, class_names, cfg,
@@ -260,11 +301,18 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                     occluded_frac=(surf.occluded_frac if surf else 0.0),
                     road_conf=road.confidence if road else 0.0,
                 )
+            if verdict.degraded:
+                out = draw_quality_banner(out, verdict.degrade_reasons)
             writer.write(out)
     finally:
         cap.release()
         if writer is not None:
             writer.close()
+
+    result.validity = validity.stats
+    if calibration is not None:
+        result.calibration = calibration.summary()
+    validity.log_summary()
 
     result.raw_detections = counter.raw_detections
     result.unique_counts = counter.unique_counts()
@@ -291,7 +339,7 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
 def _collect(r, fh: int, fw: int, road, surf, counter: UniqueCounter, scaler,
              class_names, frame_idx: int, t: float, fix, gating_mode: str,
              min_road_overlap: float, min_gate_confidence: float,
-             occlusion_threshold: float) -> list[dict]:
+             occlusion_threshold: float, zones=None) -> list[dict]:
     """Turn one frame's tracker output into gated, annotated observations."""
     import cv2
 
@@ -335,8 +383,20 @@ def _collect(r, fh: int, fw: int, road, surf, counter: UniqueCounter, scaler,
             counter.rejected_off_road += 1
             continue
 
-        occluded_frac = _overlap(geom, surf.occlusion) if surf is not None else 0.0
         cls_name = class_names[cid] if 0 <= cid < len(class_names) else str(cid)
+
+        # Outside this class's assessment zone the camera cannot resolve it, so any
+        # detection there is far more likely to be aliasing or compression noise
+        # than a real defect. Rejecting it raises precision; the zone is reported so
+        # the gap reads as "not assessed" rather than "clean".
+        if zones is not None:
+            zone_mask = zones.mask(cls_name, fw, fh)
+            if zone_mask is not None and zone_mask.any():
+                if _overlap(geom, zone_mask) < 0.5:
+                    counter.rejected_out_of_zone += 1
+                    continue
+
+        occluded_frac = _overlap(geom, surf.occlusion) if surf is not None else 0.0
         if counter.is_occluder(cls_name):
             # This class *is* the water/mud. It cannot be occluded by itself.
             occluded_frac = 0.0

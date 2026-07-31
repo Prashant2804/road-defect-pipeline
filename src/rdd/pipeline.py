@@ -93,7 +93,13 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
                             profile=quality, spec=spec)
     manifest.record("sampling", **sampled.summary())
 
-    # 6. SCALE -------------------------------------------------------------
+    # 6. GEOMETRY — calibrate the camera, then derive assessment zones ------
+    from .geometry.autocal import calibrate_video
+
+    calibration = calibrate_video(rectified.video_path, cfg, view=view, spec=spec)
+    manifest.record("geometry", **calibration.summary())
+
+    # 7. SCALE -------------------------------------------------------------
     from .preprocess.scale import build_area_scaler
 
     scaler = build_area_scaler(cfg, view,
@@ -101,30 +107,31 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
     manifest.record("scale", kind=scaler.kind, has_scale=scaler.has_scale,
                     description=scaler.describe())
 
-    # 7. MODEL -------------------------------------------------------------
+    # 8. MODEL -------------------------------------------------------------
     from .model.loader import load_model
 
     weights = cfg.get_path("inference.weights")
     model = load_model(cfg, weights=weights)
     manifest.record("model", weights=weights or "arch/warm-start default")
 
-    # 8. INFERENCE (road seg + surface + detect/track) ----------------------
+    # 9. INFERENCE (validity gate + road seg + surface + detect/track) ------
     from .inference.detect_track import run_inference
 
     infer = run_inference(rectified.video_path, model, cfg, gps=gps, out_dir=run_dir,
-                          view=view, profile=quality, spec=spec, scaler=scaler)
+                          view=view, profile=quality, spec=spec, scaler=scaler,
+                          calibration=calibration)
     manifest.record("inference", annotated_video=str(infer.annotated_video),
                     raw_detections=infer.raw_detections, unique=infer.unique_counts,
                     **infer.summary())
 
-    # 9. DEPTH (optional) --------------------------------------------------
+    # 10. DEPTH (optional) -------------------------------------------------
     from .depth.estimator import estimate_track_depths
 
     depths = estimate_track_depths(rectified.video_path, infer.counter, cfg)
     manifest.record("depth", enabled=bool(cfg.get_path("depth.enabled", False)),
                     depth_available=depths is not None)
 
-    # 10. SEVERITY ---------------------------------------------------------
+    # 11. SEVERITY ---------------------------------------------------------
     from .depth.severity import score_tracks
 
     severity = score_tracks(infer.counter.confirmed_tracks(), cfg, depths=depths,
@@ -133,7 +140,7 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
                     levels=severity.level_counts(),
                     indeterminate=severity.n_indeterminate, note=severity.scale_note)
 
-    # 11. REPORT -----------------------------------------------------------
+    # 12. REPORT -----------------------------------------------------------
     from .report.writer import write_csv, write_json, write_report
 
     outputs = {}
@@ -144,7 +151,7 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
     outputs["report"] = str(
         write_report(infer, infer.counter, severity, cfg, run_dir,
                      rectified_video=rectified.video_path, gps=gps,
-                     view=view, quality=quality)
+                     view=view, quality=quality, calibration=calibration)
     )
     outputs["annotated_video"] = str(infer.annotated_video)
     manifest.record("report", **outputs)
@@ -157,6 +164,8 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
              len(infer.counter.assessable_tracks()), severity.n_indeterminate)
     log.info("    %.1f%% of road surface unassessable",
              100 * infer.surface.unassessable_frac)
+    log.info("    route assessability: %.1f%% of frames were analysed at all",
+             100 * infer.validity.frame_coverage)
     log.info("Artifacts in: %s", run_dir)
 
     return {
@@ -165,5 +174,6 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
         "indeterminate": severity.n_indeterminate,
         "unassessable_road_frac": round(infer.surface.unassessable_frac, 4),
         "severity_basis": severity.basis,
+        "route_coverage": round(infer.validity.frame_coverage, 4),
         **outputs,
     }
