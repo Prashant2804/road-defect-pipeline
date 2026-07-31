@@ -24,6 +24,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..detect.aggregate import ConditionAggregator
+from ..detect.boundary import BoundaryConfig, detect_edge_damage
+from ..detect.confusers import ConfuserStats
+from ..detect.confusers import check as check_confusers
+from ..detect.linear import CRACK_SOURCES, LinearConfig, LinearStats, classify_crack
+from ..detect.texture import (
+    TextureConfig,
+    detect_drainage,
+    detect_ravelling,
+    detect_rutting_proxy,
+)
 from ..quality.enhance import EnhanceSpec, enhance_frame
 from ..quality.metrics import QualityProfile, judge, measure_frame
 from ..roadseg.base import build_segmenter
@@ -82,6 +93,9 @@ class InferenceResult:
     surface: SurfaceStats = field(default_factory=SurfaceStats)
     roadseg: RoadSegStats = field(default_factory=RoadSegStats)
     validity: ValidityStats = field(default_factory=ValidityStats)
+    conditions: ConditionAggregator = field(default_factory=ConditionAggregator)
+    linear: LinearStats = field(default_factory=LinearStats)
+    confusers: ConfuserStats = field(default_factory=ConfuserStats)
     scale_note: str = ""
     enhance_fingerprint: str = ""
     gating_mode: str = "gate"
@@ -101,6 +115,9 @@ class InferenceResult:
             "roadseg": self.roadseg.summary(),
             "surface": self.surface.summary(),
             "validity": self.validity.summary(),
+            "crack_classification": self.linear.summary(),
+            "confuser_rejections": self.confusers.summary(),
+            "surface_conditions": self.conditions.summary(),
             "calibration": self.calibration,
         }
 
@@ -193,6 +210,15 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
     zones = getattr(calibration, "zones", None)
     validity = ValidityChecker(cfg, camera=camera, zones=zones)
 
+    lin_cfg = LinearConfig.from_cfg(cfg)
+    tex_cfg = TextureConfig.from_cfg(cfg)
+    bnd_cfg = BoundaryConfig.from_cfg(cfg)
+    conditions_stride = max(1, int(cfg.get_path("detect.conditions_stride", 5)))
+    do_conditions = bool(cfg.get_path("detect.conditions_enabled", True))
+    do_confusers = bool(cfg.get_path("detect.confusers.enabled", True))
+    texture_ksize = int(cfg.get_path("surface.texture_ksize", 7))
+    ground_maps = None      # (x_map, z_map); depends only on calibration + frame size
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video for inference: {video_path}")
@@ -271,6 +297,40 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
             if verdict.exclude_mask is not None:
                 road = _without(road, verdict.exclude_mask)
 
+            if camera is not None and ground_maps is None:
+                gx, gz, _ = camera.ground_maps(fw, fh)
+                ground_maps = (gx, gz)
+
+            # Area and boundary conditions (ravelling, rutting proxy, edge damage,
+            # drainage) are properties of a stretch of road rather than objects, so
+            # they are accumulated on a stride instead of tracked.
+            if do_conditions and camera is not None and frame_idx % conditions_stride == 0:
+                baseline = getattr(road, "baseline", None)
+                try:
+                    result.conditions.update_ravelling(detect_ravelling(
+                        frame, road.mask, camera, baseline, cfg, zones=zones,
+                        x_map=ground_maps[0], z_map=ground_maps[1], tc=tex_cfg))
+                    result.conditions.update_rutting(detect_rutting_proxy(
+                        frame, road.mask, camera, baseline, cfg, zones=zones,
+                        x_map=ground_maps[0], z_map=ground_maps[1], tc=tex_cfg))
+                    result.conditions.update_boundary(
+                        detect_edge_damage(road.mask, camera, cfg, zones=zones,
+                                           x_map=ground_maps[0], z_map=ground_maps[1],
+                                           bc=bnd_cfg),
+                        chainage_m=(gps.distance_at_time(t) or 0.0) if gps.has_data else 0.0)
+                    result.conditions.update_drainage(detect_drainage(
+                        surf, road.mask, camera, cfg, zones=zones,
+                        x_map=ground_maps[0], z_map=ground_maps[1]))
+                except Exception as e:
+                    log.warning("Surface-condition stage failed on frame %d (%s) — "
+                                "continuing without it", frame_idx, e)
+
+            frame_feats = None
+            if do_confusers and getattr(road, "baseline", None) is not None:
+                from ..roadseg.ops import compute_features
+
+                frame_feats = compute_features(frame, texture_ksize)
+
             det_input = frame
             if gating_mode == "mask":
                 import numpy as np
@@ -290,6 +350,9 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                 r, fh, fw, road, surf, counter, scaler, class_names,
                 frame_idx, t, fix, gating_mode, min_road_overlap,
                 min_gate_confidence, occlusion_threshold, zones,
+                camera=camera, ground_maps=ground_maps, cfg=cfg, lin_cfg=lin_cfg,
+                linear_stats=result.linear, confuser_stats=result.confusers,
+                feats=frame_feats,
             )
 
             out = draw_frame(frame.copy(), detections, class_names, cfg,
@@ -310,6 +373,14 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
             writer.close()
 
     result.validity = validity.stats
+    result.conditions.log_summary()
+    if result.linear.seen:
+        log.info("Crack classification (ground-plane geometry): %d measured, %d "
+                 "reclassified from the model's label -> %s", result.linear.seen,
+                 result.linear.relabelled, result.linear.summary()["by_class"])
+    if result.confusers.rejected:
+        log.info("Confusers rejected %d detections: %s", result.confusers.rejected,
+                 result.confusers.summary()["by_confuser"])
     if calibration is not None:
         result.calibration = calibration.summary()
     validity.log_summary()
@@ -339,7 +410,9 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
 def _collect(r, fh: int, fw: int, road, surf, counter: UniqueCounter, scaler,
              class_names, frame_idx: int, t: float, fix, gating_mode: str,
              min_road_overlap: float, min_gate_confidence: float,
-             occlusion_threshold: float, zones=None) -> list[dict]:
+             occlusion_threshold: float, zones=None, camera=None,
+             ground_maps=None, cfg=None, lin_cfg=None, linear_stats=None,
+             confuser_stats=None, feats=None) -> list[dict]:
     """Turn one frame's tracker output into gated, annotated observations."""
     import cv2
 
@@ -383,7 +456,34 @@ def _collect(r, fh: int, fw: int, road, surf, counter: UniqueCounter, scaler,
             counter.rejected_off_road += 1
             continue
 
-        cls_name = class_names[cid] if 0 <= cid < len(class_names) else str(cid)
+        cls_name = (class_names[cid] if 0 <= cid < len(class_names)
+                    else f"UNMAPPED_CLASS_{cid}")
+
+        # Cracks are named by GEOMETRY, not by the model. Orientation is measured on
+        # the road plane, where "along the road" vs "across it" is a direct
+        # measurement instead of a perspective-confounded appearance cue, and
+        # alligator cracking is identified by enclosed cells rather than texture.
+        crack_geom = None
+        if cls_name in CRACK_SOURCES and camera is not None and ground_maps is not None:
+            crack_geom = classify_crack(
+                geom, camera, scaler=scaler, cfg=cfg, lin=lin_cfg,
+                x_map=ground_maps[0], z_map=ground_maps[1])
+            if linear_stats is not None:
+                linear_stats.update(cls_name, crack_geom)
+            cls_name = crack_geom.cls_name
+            cid = class_names.index(cls_name) if cls_name in class_names else cid
+
+        # Reject the recurring look-alikes (shadow, tar patch, road marking, manhole,
+        # joint) before they can become tracked defects.
+        if confuser_stats is not None and cfg is not None and feats is not None:
+            rejection = check_confusers(
+                geom, feats, getattr(road, "baseline", None), cfg, cls_name=cls_name,
+                shadow_mask=getattr(surf, "shadow", None) if surf is not None else None,
+                angle_deg=crack_geom.angle_deg if crack_geom is not None else None,
+            )
+            confuser_stats.update(rejection)
+            if rejection is not None:
+                continue
 
         # Outside this class's assessment zone the camera cannot resolve it, so any
         # detection there is far more likely to be aliasing or compression noise

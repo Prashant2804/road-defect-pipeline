@@ -542,3 +542,27 @@ def test_classifier_does_not_flag_a_merely_dark_road(cfg):
     frame, road = car_scene()
     frame = _filled_like(frame, road, bgr=(58, 61, 64), sigma=6.0)
     assert _classify(frame, road, cfg).is_road
+
+
+def test_zone_with_no_usable_band_is_unachievable(cfg):
+    """Mounting higher can make the resolvable band vanish below the frame.
+
+    A high mount improves ground resolution at a given range but pushes the nearest
+    visible ground away faster, so "can see it" and "can resolve it" stop overlapping.
+    A zero- or negative-depth zone must be reported unachievable, not presented as a
+    valid assessment range.
+    """
+    cfg.set_path("model.classes", ["longitudinal_crack"])
+    high_mount = _cam(w=1920, h=1080, pitch=8.0, height=4.0)
+    zones = build_zones(cfg, high_mount)
+    z = zones.for_class("longitudinal_crack")
+    assert not z.achievable
+    assert z.depth_m >= 0.0, "depth must never be reported negative"
+
+
+def test_narrower_fov_extends_the_crack_band(cfg):
+    """FOV/focal length is the effective lever on crack range, not mount height."""
+    cfg.set_path("model.classes", ["longitudinal_crack"])
+    wide = build_zones(cfg, _cam(w=1920, h=1080, hfov=110.0)).for_class("longitudinal_crack")
+    narrow = build_zones(cfg, _cam(w=1920, h=1080, hfov=45.0)).for_class("longitudinal_crack")
+    assert narrow.z_far_m > wide.z_far_m

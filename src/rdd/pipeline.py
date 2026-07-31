@@ -141,13 +141,16 @@ def run_pipeline(input_path: str, config_path: str, output_dir: str | None = Non
                     indeterminate=severity.n_indeterminate, note=severity.scale_note)
 
     # 12. REPORT -----------------------------------------------------------
-    from .report.writer import write_csv, write_json, write_report
+    from .report.writer import write_csv, write_json, write_report, write_segments
 
     outputs = {}
     if cfg.get_path("report.csv", True):
-        outputs["csv"] = str(write_csv(infer.counter, severity, run_dir))
+        outputs["csv"] = str(write_csv(infer.counter, severity, run_dir, cfg=cfg))
     if cfg.get_path("report.json", True):
         outputs["json"] = str(write_json(infer, run_dir, severity=severity))
+    seg_path = write_segments(infer, infer.counter, severity, cfg, run_dir, gps=gps)
+    if seg_path is not None:
+        outputs["segments"] = str(seg_path)
     outputs["report"] = str(
         write_report(infer, infer.counter, severity, cfg, run_dir,
                      rectified_video=rectified.video_path, gps=gps,

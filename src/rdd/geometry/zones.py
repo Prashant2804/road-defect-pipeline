@@ -151,9 +151,17 @@ def build_zones(cfg, camera: CameraModel) -> ZoneSet:
         if z_far >= min(hard_far, 150.0) - 1e-6:
             limited_by = "config" if hard_far < far_visible else "field_of_view"
 
-        # If even the closest usable ground misses the budget, the camera simply
-        # cannot resolve this class — say so instead of emitting a sliver of a zone.
-        achievable = camera.gsd_at(max(z_min, 0.5)).worst <= required
+        # Two ways a class can be unachievable, and both must be caught:
+        #  1. the closest usable ground already misses the resolution budget;
+        #  2. the resolution limit falls *nearer* than the nearest visible ground —
+        #     the resolvable band lies below the bottom of the frame, so there is no
+        #     overlap between "can see it" and "can resolve it".
+        # Case 2 is easy to hit by mounting the camera higher: that improves ground
+        # resolution at a given range but pushes the near visible limit away faster,
+        # so the usable band can vanish entirely. Emitting a zero- or negative-depth
+        # zone would look like a valid assessment range.
+        achievable = (camera.gsd_at(max(z_min, 0.5)).worst <= required
+                      and z_far > z_min + 1e-6)
         zones[cls] = AssessmentZone(
             cls_name=cls, required_gsd_m=required,
             z_near_m=round(z_min, 3), z_far_m=round(z_far, 3),

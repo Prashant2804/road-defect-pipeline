@@ -21,17 +21,26 @@ log = get_logger("rdd.report")
 _CSV_COLUMNS = [
     "track_id", "class", "first_frame", "last_frame", "first_t_s", "last_t_s",
     "n_frames", "mask_area_px", "area_m2", "severity_level", "severity_score",
-    "severity_basis", "assessable", "occluded_frac", "road_overlap",
+    "severity_basis", "irc_level", "irc_basis", "irc_value",
+    "assessable", "occluded_frac", "road_overlap",
     "peak_conf", "lat", "lon", "note",
 ]
 
 
-def _rows(counter, severity):
+def _rows(counter, severity, cfg=None):
+    from .irc import grade_defect
+
     for t in counter.confirmed_tracks():
         rep = t.representative()
         sev = severity.get(t.track_id) if severity is not None else None
         level = sev.level if sev else ""
         indeterminate = bool(sev and sev.is_indeterminate)
+        # IRC band from the measured physical quantity, alongside the relative score.
+        # The two answer different questions: the score ranks defects within this run,
+        # the band is what a specification is written against.
+        irc = (grade_defect(t.cls_name, cfg, area_m2=t.max_area_m2,
+                            occluded=indeterminate)
+               if cfg is not None else None)
         yield {
             "track_id": t.track_id,
             "class": t.cls_name,
@@ -45,6 +54,9 @@ def _rows(counter, severity):
             "severity_level": level,
             "severity_score": "" if (sev is None or sev.score is None) else sev.score,
             "severity_basis": sev.basis if sev else "",
+            "irc_level": irc.level if irc else "",
+            "irc_basis": irc.basis if irc else "",
+            "irc_value": (round(irc.value, 4) if (irc and irc.value is not None) else ""),
             "assessable": "no" if indeterminate else "yes",
             "occluded_frac": round(t.median_occluded_frac, 3),
             "road_overlap": round(t.mean_road_overlap, 3),
@@ -55,10 +67,10 @@ def _rows(counter, severity):
         }
 
 
-def write_csv(counter, severity, out_dir: Path) -> Path:
+def write_csv(counter, severity, out_dir: Path, cfg=None) -> Path:
     import pandas as pd
 
-    rows = list(_rows(counter, severity))
+    rows = list(_rows(counter, severity, cfg))
     df = pd.DataFrame(rows, columns=_CSV_COLUMNS)
     path = Path(out_dir) / "defects.csv"
     df.to_csv(path, index=False)
@@ -178,6 +190,23 @@ def _img_b64(path: Path) -> str:
     return base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
 
+def _segment_context(result, counter, severity, cfg, gps) -> dict:
+    from .irc import build_segments, segments_summary
+
+    if not cfg.get_path("report.segments.enabled", True):
+        return {}
+    try:
+        segs = build_segments(counter, severity, cfg, fps=result.fps, gps=gps,
+                              validity=result.validity)
+    except Exception as e:      # reporting must not fail the run
+        log.warning("Segment rollup failed (%s) — omitting it from the report", e)
+        return {}
+    if not segs:
+        return {}
+    return {**segments_summary(segs, cfg),
+            "rows": [s.as_dict(cfg) for s in segs][:200]}
+
+
 def _crop_figure(c: dict) -> str:
     """One <figure> for a sample crop, captioned with class, severity and size."""
     caption = f"{c['cls']} #{c['id']}"
@@ -191,6 +220,40 @@ def _crop_figure(c: dict) -> str:
         f"<img src='data:image/jpeg;base64,{_img_b64(c['path'])}'/>"
         f"<figcaption>{caption}</figcaption></figure>"
     )
+
+
+def write_segments(result, counter, severity, cfg, out_dir: Path, gps=None) -> Path | None:
+    """Per-100 m chainage rollup — what a maintenance planner actually consumes.
+
+    A list of nine hundred individual defects is not actionable; a graded stretch is.
+    The per-defect CSV stays available underneath for verification.
+    """
+    import pandas as pd
+
+    from .irc import build_segments, segments_summary
+
+    if not cfg.get_path("report.segments.enabled", True):
+        return None
+    segments = build_segments(counter, severity, cfg, fps=result.fps, gps=gps,
+                              validity=result.validity)
+    if not segments:
+        return None
+
+    rows = [s.as_dict(cfg) for s in segments]
+    flat = []
+    for r in rows:
+        row = {"segment": r["segment"], "start_m": r["chainage_m"][0],
+               "end_m": r["chainage_m"][1], "grade": r["grade"],
+               "coverage": r["coverage"], "indeterminate": r["indeterminate"]}
+        row.update({f"n_{k}": v for k, v in r["defects"].items()})
+        flat.append(row)
+    path = Path(out_dir) / "segments.csv"
+    pd.DataFrame(flat).to_csv(path, index=False)
+
+    s = segments_summary(segments, cfg)
+    log.info("Segments: %d x %.0f m — grades %s", s["n_segments"],
+             s["segment_length_m"], s["grades"])
+    return path
 
 
 def write_report(result, counter, severity, cfg, out_dir: Path,
@@ -238,7 +301,11 @@ def write_report(result, counter, severity, cfg, out_dir: Path,
         "camera": (calibration.camera.describe() if calibration else ""),
         "zones": (calibration.zones.summary() if calibration else {}),
         "unachievable": (calibration.zones.unachievable() if calibration else []),
+        "conditions": result.conditions.summary(),
+        "linear": result.linear.summary(),
+        "confusers": result.confusers.summary(),
     }
+    ctx["segments"] = _segment_context(result, counter, severity, cfg, gps)
 
     if fmt == "pdf":
         return _write_pdf(ctx, out_dir)
@@ -290,6 +357,67 @@ excluded frames were never inspected, and are not evidence of intact road.
         f"<td>{'yes' if z['achievable'] else '<strong>NO</strong>'}</td></tr>"
         for z in ctx["zones"].values()
     )
+    seg = ctx.get("segments") or {}
+    seg_block = ""
+    if seg.get("rows"):
+        seg_rows = "".join(
+            f"<tr><td class='n'>{r['chainage_m'][0]:.0f}–{r['chainage_m'][1]:.0f}</td>"
+            f"<td class='g-{r['grade']}'>{r['grade']}</td>"
+            f"<td class='n'>{r['coverage']:.0%}</td>"
+            f"<td class='n'>{sum(r['defects'].values())}</td>"
+            f"<td>{', '.join(f'{k}:{v}' for k, v in r['defects'].items()) or '—'}</td></tr>"
+            for r in seg["rows"]
+        )
+        seg_block = f"""
+<h2>Condition by chainage ({seg['segment_length_m']:.0f} m segments)</h2>
+<p class="sub">Grades: {', '.join(f'{k} {v}' for k, v in seg['grades'].items())}</p>
+<table><tr><th>Chainage (m)</th><th>Grade</th><th>Coverage</th><th>Defects</th>
+<th>Breakdown</th></tr>{seg_rows}</table>
+<div class="note">A segment below the coverage floor is graded
+<strong>indeterminate</strong>, not sound — a stretch nobody could see must not be
+reported as intact. Full table in <code>segments.csv</code>.</div>"""
+
+    cond = ctx.get("conditions") or {}
+    cond_block = ""
+    if cond:
+        rav, rut = cond.get("ravelling", {}), cond.get("rutting", {})
+        edge, drain = cond.get("edge_damage", {}), cond.get("drainage", {})
+        cond_block = f"""
+<h2>Surface &amp; boundary conditions</h2>
+<table><tr><th>Condition</th><th>Extent</th><th>Basis</th></tr>
+<tr><td>Ravelling</td><td class='n'>{rav.get('percent_surface_affected', 0):.1f}% of
+graded surface</td><td class='sub'>{rav.get('basis', '')}</td></tr>
+<tr><td>Edge damage</td><td class='n'>{edge.get('n_distinct_stretches', 0)} stretches,
+worst {edge.get('worst_inset_m', 0):.2f} m inset</td>
+<td class='sub'>{edge.get('basis', '')}</td></tr>
+<tr><td>Drainage</td><td class='n'>{drain.get('percent_frames_with_edge_pooling', 0):.0f}%
+of frames show edge pooling</td><td class='sub'>{drain.get('basis', '')}</td></tr>
+<tr><td>Rutting</td><td class='n'>index {rut.get('mean_wheelpath_index', 0):.2f}</td>
+<td class='sub'>{rut.get('basis', '')}</td></tr>
+</table>
+<div class="note">These are conditions of a <em>stretch</em> of road, so they are
+reported as extents rather than as instance counts — "37% of the surface is ravelled"
+is meaningful where "412 ravelling instances" would just be a function of grid size.
+Only the geometric edge measurement is label-free <em>and</em> metric; the others are
+marked indicative.</div>"""
+
+    lin = ctx.get("linear") or {}
+    conf = ctx.get("confusers") or {}
+    method_extra = ""
+    if lin.get("cracks_measured"):
+        method_extra += (
+            f"<li>{lin['cracks_measured']} cracks were measured on the road plane and "
+            f"{lin['reclassified']} were reclassified from the model's own label "
+            f"({', '.join(f'{k}: {v}' for k, v in lin.get('by_class', {}).items())}). "
+            f"Longitudinal vs transverse is a geometric measurement here, not a "
+            f"learned appearance cue.</li>")
+    if conf.get("rejected"):
+        method_extra += (
+            f"<li>{conf['rejected']} of {conf['checked']} detections were rejected as "
+            f"known look-alikes: "
+            f"{', '.join(f'{k} ({v})' for k, v in conf.get('by_confuser', {}).items())}."
+            f"</li>")
+
     zone_block = f"""
 <h2>Assessment zones</h2>
 <p class="sub">{ctx['camera']}</p>
@@ -324,6 +452,10 @@ for falling outside their class's zone.
  .ok{{background:#eafaf1;border-left:4px solid #27ae60;padding:8px 12px;font-size:.9rem}}
  .note{{background:#f4f6f8;border-left:4px solid #7f8c8d;padding:8px 12px;font-size:.85rem}}
  ul{{font-size:.9rem}} code{{background:#f4f6f8;padding:1px 4px;border-radius:3px}}
+ .g-high{{color:#c0392b;font-weight:700}} .g-medium{{color:#e67e22;font-weight:600}}
+ .g-low{{color:#f1c40f}} .g-sound{{color:#27ae60}}
+ .g-indeterminate{{color:#7f8c8d;font-style:italic}}
+ td.sub{{color:#666;font-size:.8rem}}
 </style></head><body>
 <h1>Road Defect Report</h1>
 <p class="sub">Run: {ctx['run_name']} · viewpoint: <code>{ctx['view']}</code></p>
@@ -341,6 +473,7 @@ there is <em>not</em> evidence of an intact road.
 </div>
 {coverage_block}
 {zone_block}
+{seg_block}
 
 <h2>Counts by class</h2>
 <table><tr><th>Class</th><th>Unique</th><th>Of which indeterminate</th></tr>{rows}</table>
@@ -350,9 +483,12 @@ there is <em>not</em> evidence of an intact road.
 <div class="note"><strong>Basis: {ctx['severity_basis']}.</strong> {ctx['severity_note']}<br>
 Ground scale: {ctx['scale_note']}</div>
 
+{cond_block}
+
 <h2>Coverage &amp; method</h2>
 <ul>
 {skip_note}
+{method_extra}
 <li>{ctx['off_road_rejected']} detections were rejected for falling outside the
 segmented road surface.</li>
 <li>Road mask: {ctx['roadseg'].get('mean_road_coverage', 0) * 100:.1f}% of frame on

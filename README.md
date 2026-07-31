@@ -1,7 +1,8 @@
 # Road Defect Detection Pipeline
 
-Detect **potholes, water-logging, ruts/erosion, and cracks** in road survey video
-from a **vehicle (360° or flat) or a drone (nadir)**, on unpaved rural roads, and
+Detect and classify **potholes, longitudinal & transverse cracks, alligator/fatigue
+cracking, ravelling, rutting, edge damage/shoulder erosion, drainage issues and
+water-logging** in dashcam or drone road-survey video, graded to IRC/PMGSY, and
 produce:
 
 1. an **annotated video** — road outline, hatched unassessable areas, defect masks,
@@ -129,6 +130,7 @@ Outputs land in `out/<run.name>/`:
 | `summary.json` | unique counts, indeterminate counts, full per-stage pipeline summary |
 | `report.html` | headline counts **and** unassessable-% banner, severity basis, coverage |
 | `manifest.json` | config, versions, git commit, enhancement fingerprint, per-stage records |
+| `segments.csv` | per-100 m chainage rollup with a condition grade and coverage |
 | `run.log` | |
 
 ### No real footage yet? Generate some
@@ -275,6 +277,37 @@ is a large range error. Camera **height must be measured** — it does not affec
 vanishing point and cannot be recovered this way, and it linearly scales every
 distance and area.
 
+## Capture geometry: what actually limits crack detection
+
+Worth knowing before buying cameras, because the binding constraint is physical and
+no amount of modelling moves it.
+
+Ground resolution in a forward view is strongly **anisotropic**, and the *longitudinal*
+direction is the limit. It degrades as
+
+```
+dz/dv  ≈  z² / (h · f)        z = range, h = camera height, f = focal length in px
+```
+
+so it worsens with the **square** of distance. At 1080p / 78° / 1.3 m, a 5 mm/px budget
+is met only out to about 2.6 m. Measured with `run.py validity`/the zone table:
+
+| Change | Crack band (5 mm/px) | Verdict |
+|---|---|---|
+| 1080p → 4K | 2.6 m → 3.8 m | helps, sub-linearly |
+| 78° → 35° FOV | 2.6 m → 4.3 m | **the effective lever** |
+| 1.3 m → 3 m mount | band **vanishes** | counter-productive |
+
+Mounting higher improves resolution at a given range but pushes the *nearest visible
+ground* away faster, so "can see it" and "can resolve it" stop overlapping — the
+resolvable band ends up below the bottom of the frame. The pipeline detects that and
+reports the class unachievable rather than emitting a zero-depth zone.
+
+Practical guidance: **narrow the field of view** (or add a second, longer-focal camera
+aimed at the near road), keep the mount low, and accept that hairline cracks are
+assessed in a short band close to the vehicle. Potholes and edge damage, needing only
+20 mm/px, get a much longer band.
+
 ## How mud & water detection works
 
 Every cue is an **illumination invariant**, because the hardest false positive in
@@ -354,6 +387,7 @@ python run.py preprocess --input video.mp4              # reproject + quality + 
 python run.py quality    --input video.mp4 --csv q.csv  # measure only
 python run.py roadseg    --input video.mp4 --n 8        # mask previews for tuning
 python run.py validity   --input video.mp4 --no-traffic # per-frame assessability
+python run.py evaluate   --defects out/default/defects.csv --truth gt.csv
 python run.py annotate   --frames data/rectified        # which frames to label first
 python run.py train      --labels data/labels           # fine-tune (segment-safe split)
 python run.py infer      --input rectified.mp4 --weights best.pt
@@ -413,6 +447,15 @@ India subset, or a Roboflow road-defect model), then fine-tune.
 | `validity.enabled` | master switch for refusing unassessable frames |
 | `validity.road_buried.block_above_frac` | water/mud coverage that blocks a frame |
 | `validity.traffic.enabled` | mask vehicles out of the road region (COCO, no labels) |
+| `detect.linear.*` | ground-plane angle bands for L/T; cell density for alligator |
+| `detect.boundary.min_inset_m` | edge loss threshold, in metres |
+| `detect.texture.cell_m` | ravelling grid cell size **in metres** |
+| `detect.confusers.*` | rejection rules for shadow/tar/marking/manhole/joint |
+| `detect.tiling.enabled` | sliced inference — turn on once a crack model is trained |
+| `eval.target_precision` | the precision contract (default 0.90) |
+| `eval.exclude_from_target` | classes outside the guarantee (rutting) |
+| `report.irc.*` | IRC severity bands per measured quantity |
+| `report.segments.length_m` | chainage segment length (default 100 m) |
 | `surface.occlusion_policy` | `abstain` / `flag` / `exclude` |
 | `surface.occluder_classes` | classes that *are* the occluder (`water_logging`) |
 | `severity.absolute_bins_m2` | physical severity thresholds when scale is known |
@@ -444,7 +487,7 @@ India subset, or a Roboflow road-defect model), then fine-tune.
 python -m pytest tests/ -q
 ```
 
-205 tests. The ones that matter most encode the design invariants: hole-filling
+267 tests. The ones that matter most encode the design invariants: hole-filling
 keeps defects inside the road mask; a multiplicative shadow is not mud; a clean
 road reports ~0% occluded; water-logging is never occluded by itself; a defect
 under water is never severity-scored; absolute severity is comparable across runs
@@ -477,6 +520,9 @@ src/rdd/
   roadseg/                 ops, geometric prior, classical, temporal, sam
   surface/                 water/mud condition -> occlusion mask + plausibility
   validity/                frame verdict, gates, ego-motion, traffic occlusion
+  detect/                  linear (crack geometry), boundary (edge), texture
+                           (ravelling/rutting), confusers, tiling, aggregate
+  eval/                    per-unique-defect precision, threshold calibration
   annotate/                SAM-assisted labeling + active-learning frame picker
   model/                   YOLO loader (fallback), segment split, training
   depth/                   optional depth backend + severity (with abstention)

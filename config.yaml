@@ -442,7 +442,22 @@ model:
   fallback_arch: "yolo11-seg"
   size: "m"
   warm_start_weights: null
-  classes: ["pothole", "water_logging", "rut_erosion", "crack"]
+  # The output taxonomy. The three crack classes are NOT expected from the model —
+  # a crack detector (generic `crack`, or RDD2022's D00/D10/D20) is re-measured on
+  # the road plane and named by geometry in detect/linear.py, because the model's own
+  # longitudinal-vs-transverse split is perspective-confounded.
+  # edge_damage, ravelling, rutting and drainage_issue are produced label-free by
+  # detect/{boundary,texture}.py rather than by the detector.
+  classes:
+    - "pothole"
+    - "longitudinal_crack"
+    - "transverse_crack"
+    - "alligator_crack"
+    - "ravelling"
+    - "edge_damage"
+    - "rutting"
+    - "drainage_issue"
+    - "water_logging"
   train:
     data_yaml: "data/dataset.yaml"
     epochs: 100
@@ -453,6 +468,110 @@ model:
       mode: "segment"              # segment | time  (never "random")
       segment_gap_s: 5.0
       ratios: {train: 0.7, val: 0.15, test: 0.15}
+
+# ---------------------------------------------------------------------------
+# 7b. DETECT — the four detector families
+# ---------------------------------------------------------------------------
+# The seven requested categories are four different problems. Mixing them into one
+# flat class list caps accuracy on all of them, so each family gets the right tool.
+detect:
+  conditions_enabled: true
+  conditions_stride: 5             # area/boundary conditions every N frames
+
+  tiling:
+    # A crack 3 px wide becomes 1.5 px when a 1920-wide frame is letterboxed to
+    # imgsz 960 — below the network's stride, so its features are destroyed before
+    # the first convolution. Tiling the ROAD REGION at native resolution restores
+    # them at a cost proportional to road area, not frame area.
+    enabled: false                 # turn on once a crack model is trained
+    tile_px: 640
+    overlap: 0.25
+    max_tiles: 12
+    iou_merge: 0.45
+    min_road_frac: 0.10
+
+  linear:
+    # Cracks are classified by measuring orientation on the ROAD PLANE. In the image,
+    # a longitudinal crack's angle depends on where in the frame it falls, so image
+    # orientation is not the feature — ground orientation is.
+    longitudinal_max_deg: 30.0     # <= this to the road axis -> longitudinal
+    transverse_min_deg: 60.0       # >= this -> transverse (between = diagonal, flagged)
+    # Alligator is identified by CONNECTIVITY, not appearance: fatigue cracking
+    # encloses pavement cells, parallel cracks enclose nothing.
+    alligator_min_cells_per_m2: 4.0
+    alligator_min_cells: 3
+    alligator_max_elongation: 4.0
+    min_length_m: 0.15
+    min_points: 30
+
+  boundary:
+    # Edge damage needs no detector: it IS an irregularity of the road-mask boundary.
+    # Measured in METRES on the ground plane — in the image a straight edge converges
+    # on the vanishing point, so pixel deviation is dominated by perspective.
+    min_inset_m: 0.10              # loss below this is measurement noise
+    min_length_m: 0.40
+    poly_order: 2                  # straight or gently curving edge baseline
+    n_samples: 40
+    max_residual_m: 1.2            # worse than this and the mask, not the road, is bad
+
+  texture:
+    # Ravelling must be graded at a FIXED GROUND SIZE. A fixed-pixel window grades the
+    # near field rough and the far field smooth on every road ever surveyed, purely
+    # because of sampling.
+    cell_m: 0.5
+    min_cell_px: 40
+    ravelling_min_z: 1.5           # texture above baseline to call ravelling
+    min_cells: 4
+    # Rutting: wheel paths sit at predictable offsets. Reported as an INDEX only —
+    # a monocular camera cannot measure rut depth, so no depth is ever emitted.
+    wheelpath_offset_m: 0.85
+    wheelpath_half_width_m: 0.35
+
+  drainage:
+    # Culvert identification needs labelled examples (deferred). The SYMPTOM does not:
+    # water pooling against the road edge instead of draining away.
+    edge_erode_frac: 0.10
+    min_pool_px: 250
+
+  confusers:
+    # The recurring dashcam look-alikes. Each rule needs several cues to agree —
+    # rejecting a real pothole to avoid a tar patch is a bad trade — and every
+    # rejection is counted by reason so the filter is auditable.
+    enabled: true
+    exempt_classes: ["water_logging"]
+    shadow_overlap: 0.70           # detection lying in verified shade
+    tar_min_darker_z: 1.2          # dark BUT smooth BUT chromatically distinct
+    tar_min_smoother_z: 1.5
+    tar_min_chroma_z: 1.0
+    marking_min_brighter_z: 1.5    # bright, straight, thin, road-aligned
+    marking_min_elongation: 6.0
+    marking_min_fill: 0.55
+    marking_max_angle_deg: 25.0
+    manhole_min_circularity: 0.80  # near-circular and smooth
+    manhole_min_smoother_z: 0.8
+    joint_min_angle_deg: 75.0      # ruler-straight full-width transverse line
+    joint_min_elongation: 12.0
+    joint_min_fill: 0.70
+    joint_max_darker_z: 3.0
+
+# ---------------------------------------------------------------------------
+# 7c. EVAL — where the >=90% precision target is proven or disproven
+# ---------------------------------------------------------------------------
+# Precision is an OPERATING POINT, not a property: every detector traces a
+# precision-recall curve, so "90% precision" means choosing a threshold on it. The
+# honest deliverable is per-class thresholds plus the recall paid for them.
+eval:
+  target_precision: 0.90
+  # Counting unit is the unique multi-frame-confirmed defect, never a per-frame
+  # detection — a number that moves with frame rate is not a quality measure.
+  match_slack_frames: 5
+  min_support: 8                   # too few ground-truth instances to certify
+  # Require the LOWER bound of the confidence interval to clear the target, so a class
+  # is not certified on the strength of 9 correct out of 10.
+  require_ci_lower_bound: true
+  # Classes explicitly outside the guarantee (your call on rutting).
+  exclude_from_target: ["rutting"]
+  ground_truth: null               # CSV/JSON: class,first_frame,last_frame[,id,lat,lon]
 
 # ---------------------------------------------------------------------------
 # 8. DEPTH — OPTIONAL. Adds depth to severity where it is measurable.
@@ -511,6 +630,27 @@ report:
   csv: true
   json: true
   format: "html"                   # html | pdf   (pdf needs reportlab)
+
+  irc:
+    # IRC/PMGSY-style severity bands, on MEASURED physical quantities rather than a
+    # score normalised across whatever happened to be in one clip (which is not
+    # convertible to these bands and not comparable between surveys).
+    # Config-driven because specifications get revised and authorities adopt variants —
+    # align these to whatever document a given contract cites.
+    crack_width_mm: {medium: 3.0, high: 6.0}
+    pothole_area_m2: {medium: 0.10, high: 0.50}
+    area_percent: {medium: 10.0, high: 30.0}
+    edge_inset_m: {medium: 0.15, high: 0.30}
+
+  segments:
+    # Maintenance is planned per stretch, not per defect, so results roll up into
+    # chainage segments. The per-defect CSV stays available underneath.
+    enabled: true
+    length_m: 100.0
+    assumed_speed_mps: 8.0         # used for chainage only when GPS is absent
+    # A segment nobody could see is not a sound segment: below this coverage the grade
+    # is "indeterminate" regardless of how few defects were found there.
+    min_coverage: 0.30
   crops:
     enabled: true
     max_per_class: 6

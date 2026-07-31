@@ -266,6 +266,64 @@ def _cmd_validity(args):
         print(f"per-frame verdicts -> {path}")
 
 
+def _cmd_evaluate(args):
+    """Measure precision per unique defect and calibrate per-class thresholds.
+
+    Consumes a finished run's `defects.csv` plus a ground-truth file, so it can be
+    re-run at different targets without re-running inference.
+    """
+    import json
+
+    import pandas as pd
+
+    from rdd.eval.precision import certify, load_ground_truth
+    from rdd.utils.logging import setup_logging
+
+    setup_logging()
+    cfg = _load(args)
+    truth = load_ground_truth(args.truth)
+
+    df = pd.read_csv(args.defects)
+
+    class _Track:
+        """Just enough of a Track for the matcher."""
+
+        def __init__(self, row):
+            self.track_id = int(row["track_id"])
+            self.cls_name = str(row["class"])
+            self.first_frame = int(row["first_frame"])
+            self.last_frame = int(row["last_frame"])
+            self.peak_conf = float(row.get("peak_conf", 1.0) or 1.0)
+
+    tracks = [_Track(r) for _, r in df.iterrows()]
+    coverage = None
+    if args.summary and Path(args.summary).exists():
+        s = json.loads(Path(args.summary).read_text(encoding="utf-8"))
+        coverage = (s.get("pipeline", {}).get("validity", {}) or {}).get("frame_coverage")
+
+    report = certify(tracks, truth, cfg, route_coverage=coverage)
+    print()
+    print(report.table())
+    print()
+    print(f"Certified  : {', '.join(report.certified) or 'none'}")
+    print(f"Indicative : {', '.join(report.indicative) or 'none'}")
+
+    out = Path(args.out or "out/calibration.yaml")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    import yaml
+
+    out.write_text(yaml.safe_dump({
+        "target_precision": report.target_precision,
+        "thresholds": report.thresholds(),
+        "certified": report.certified,
+        "indicative": report.indicative,
+        "per_class": {c: v.as_dict() for c, v in report.per_class.items()},
+    }, sort_keys=False), encoding="utf-8")
+    print(f"\nCalibration -> {out}")
+    print("Apply per-class thresholds by setting inference.conf to the lowest, then "
+          "filtering the rest in the report.")
+
+
 def _cmd_train(args):
     from rdd.model.train import train
     from rdd.utils.logging import setup_logging
@@ -389,6 +447,15 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--json", default=None, help="write per-frame verdicts here")
     _common(sv)
     sv.set_defaults(func=_cmd_validity)
+
+    se = sub.add_parser("evaluate", help="precision per unique defect + thresholds")
+    se.add_argument("--defects", required=True, help="defects.csv from a run")
+    se.add_argument("--truth", required=True,
+                    help="ground truth CSV/JSON: class,first_frame,last_frame")
+    se.add_argument("--summary", default=None, help="summary.json, for route coverage")
+    se.add_argument("--out", default=None, help="where to write calibration.yaml")
+    _common(se, view=False)
+    se.set_defaults(func=_cmd_evaluate)
 
     st = sub.add_parser("train", help="fine-tune on labels (segment-split)")
     st.add_argument("--labels", default=None)

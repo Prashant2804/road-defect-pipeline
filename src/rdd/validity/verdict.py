@@ -137,6 +137,9 @@ class ValidityStats:
     degraded_by_gate: dict[str, int] = field(default_factory=dict)
     _longest_gap: int = 0
     _current_gap: int = 0
+    # Kept so the segment rollup can report coverage per chainage segment: a stretch
+    # nobody could see must not be graded "sound".
+    _per_frame_assessable: list[bool] = field(default_factory=list)
 
     def update(self, verdict: FrameVerdict, distance_m: float = 0.0) -> None:
         self.frames += 1
@@ -147,6 +150,7 @@ class ValidityStats:
             elif r.action is Action.DEGRADE:
                 self.degraded_by_gate[r.gate] = self.degraded_by_gate.get(r.gate, 0) + 1
 
+        self._per_frame_assessable.append(verdict.assessable)
         if verdict.assessable:
             self.assessable += 1
             self.distance_assessable_m += distance_m

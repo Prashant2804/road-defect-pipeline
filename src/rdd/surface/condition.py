@@ -58,6 +58,7 @@ class SurfaceMap:
     mud_px: float = 0.0
     baseline_source: str = "segmenter"
     plausibility: "SurfacePlausibility | None" = None
+    shadow: "object | None" = None      # consumed by detect.confusers
 
     def _frac(self, px: float) -> float:
         return (px / self.road_area_px) if self.road_area_px > 0 else 0.0
@@ -307,7 +308,7 @@ def _warn_featureless_baseline(stats: dict) -> None:
         )
 
 
-def _classify(z: dict, sc: dict, scale: float = 1.0):
+def _classify(z: dict, sc: dict, scale: float = 1.0, want_shadow: bool = False):
     """Apply the water/mud/shadow rules to a set of z-maps.
 
     `scale` multiplies every threshold, so the same rules serve both the strict
@@ -374,6 +375,8 @@ def _classify(z: dict, sc: dict, scale: float = 1.0):
         mud_strength = warmer + darker
         water = water & ~(both & (mud_strength > water_strength))
         mud = mud & ~(both & (water_strength >= mud_strength))
+    if want_shadow:
+        return water, mud, shadow
     return water, mud
 
 
@@ -426,7 +429,7 @@ def analyse_surface(frame, road_mask, cfg) -> SurfaceMap:
     weak_scale = float(sc.get("extent_threshold_scale", 0.6))
 
     z_strong = _zmaps(feats, stats, strong_k)
-    water_core, mud_core = _classify(z_strong, sc, 1.0)
+    water_core, mud_core, shadow_mask = _classify(z_strong, sc, 1.0, want_shadow=True)
 
     if weak_k != strong_k or weak_scale != 1.0:
         z_weak = _zmaps(feats, stats, weak_k)
@@ -449,5 +452,5 @@ def analyse_surface(frame, road_mask, cfg) -> SurfaceMap:
         water=water, mud=mud, dry=road & ~occlusion, occlusion=occlusion,
         road_area_px=float(road.sum()), water_px=float(water.sum()),
         mud_px=float(mud.sum()), baseline_source=source,
-        plausibility=plausibility,
+        plausibility=plausibility, shadow=(shadow_mask & road),
     )
