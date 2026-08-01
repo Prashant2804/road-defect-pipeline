@@ -147,27 +147,23 @@ def _cmd_roadseg(args):
     cap = cv2.VideoCapture(str(args.input))
     if not cap.isOpened():
         raise SystemExit(f"Cannot open {args.input}")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
 
     view = resolve_view(cfg, w, h)
     seg = build_segmenter(cfg, view)
     out_dir = Path(args.output or "out") / "roadseg_preview"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    stride = max(1, (total // max(1, args.n)) if total else 1)
     from rdd.quality.enhance import enhance_frame
+    from rdd.utils.video import iter_sampled_frames
 
-    idx, saved = -1, 0
-    print(f"\nviewpoint {view.name}, prior {view.road_prior.kind}")
-    while saved < args.n:
-        ok, raw = cap.read()
-        if not ok:
-            break
-        idx += 1
-        if idx % stride:
-            continue
+    print(f"\nviewpoint {view.name}, prior {view.road_prior.kind}", flush=True)
+    saved = 0
+    # Seeks to the sample points rather than decoding the whole file: a preview of
+    # four frames should not cost a full pass over an hour of 4K footage.
+    for idx, raw in iter_sampled_frames(args.input, args.n):
         frame = enhance_frame(raw, spec) if spec.enabled else raw
         road = seg.segment(frame)
         surf = analyse_surface(frame, road, cfg)
@@ -175,13 +171,13 @@ def _cmd_roadseg(args):
         vis = draw_surface(draw_road(frame.copy(), road, cfg), surf, cfg)
         path = out_dir / f"preview_{idx:07d}.jpg"
         cv2.imwrite(str(path), vis)
+        # Flushed so progress is visible while running under a notebook or a pipe.
         print(f"  frame {idx:6d}  road {road.coverage() * 100:5.1f}% of frame  "
               f"conf {road.confidence:.2f}  "
               f"{'PRIOR-FALLBACK  ' if road.fell_back else ''}"
               f"water {surf.water_frac * 100:4.1f}%  mud {surf.mud_frac * 100:4.1f}%  "
-              f"unassessable {surf.occluded_frac * 100:4.1f}%")
+              f"unassessable {surf.occluded_frac * 100:4.1f}%", flush=True)
         saved += 1
-    cap.release()
     print(f"\n{saved} previews -> {out_dir}")
     print("Green outline = road surface; hatched blue = water, brown = mud.")
 

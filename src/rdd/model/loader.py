@@ -75,6 +75,61 @@ def check_class_alignment(model, cfg) -> bool:
     return True
 
 
+def build_class_resolver(model, cfg):
+    """Map the checkpoint's own class ids onto the pipeline taxonomy.
+
+    Without this, a public checkpoint is unusable. Detections carry an integer class
+    id, and the pipeline was resolving it positionally against `model.classes` — so an
+    RDD2022 model (D00, D10, D20, D40, Repair) against this 9-class config would label
+    D00 "pothole" simply because both sit at index 0. Nothing errors; every row in the
+    report is just wrong.
+
+    With `model.class_map` set, ids are resolved through the checkpoint's *own* names
+    and translated by name. Mapping a name to null drops that class — useful for
+    categories a public model predicts that this pipeline does not report, such as
+    RDD2022's "Repair", which is a past intervention rather than a defect.
+
+    Returns a callable id -> class name, or None to discard the detection.
+    """
+    configured = [str(c) for c in (cfg.get_path("model.classes") or [])]
+    raw_map = cfg.get_path("model.class_map") or {}
+    class_map = {str(k): (None if v in (None, "", "null") else str(v))
+                 for k, v in dict(raw_map).items()}
+    model_names = model_class_names(model) if model is not None else []
+
+    if not class_map or not model_names:
+        def by_index(cid: int):
+            if 0 <= cid < len(configured):
+                return configured[cid]
+            return f"UNMAPPED_CLASS_{cid}"
+        return by_index
+
+    def _brief(items, limit: int = 8) -> str:
+        """Log lists compactly — an 80-class COCO checkpoint makes a log line unreadable."""
+        items = list(items)
+        head = ", ".join(str(i) for i in items[:limit])
+        return head if len(items) <= limit else f"{head}, ... (+{len(items) - limit} more)"
+
+    unknown = [n for n in model_names if n not in class_map]
+    if unknown:
+        log.warning(
+            "model.class_map has no entry for %d checkpoint class(es): %s — those "
+            "detections keep their raw name. Add them to the map, or map them to null "
+            "to drop them.", len(unknown), _brief(unknown))
+    dropped = sorted(k for k, v in class_map.items() if v is None)
+    if dropped:
+        log.info("Dropping checkpoint classes not reported here: %s", _brief(dropped))
+    mapped = {n: class_map[n] for n in model_names if n in class_map and class_map[n]}
+    log.info("Class map: %s", _brief(f"{k}->{v}" for k, v in mapped.items()))
+
+    def by_name(cid: int):
+        if not (0 <= cid < len(model_names)):
+            return f"UNMAPPED_CLASS_{cid}"
+        name = model_names[cid]
+        return class_map.get(name, name)
+    return by_name
+
+
 def load_model(cfg, weights: str | None = None):
     """Return an ultralytics YOLO model. `weights` overrides everything (used at
     inference to load a trained .pt)."""

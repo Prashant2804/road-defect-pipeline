@@ -215,3 +215,107 @@ def test_model_without_names_is_not_flagged():
     from rdd.model.loader import check_class_alignment
 
     assert check_class_alignment(_FakeModel({}), load_config("config.yaml")) is True
+
+
+# -- checkpoint class mapping --------------------------------------------------
+
+class _NamedModel:
+    def __init__(self, names):
+        self.names = dict(enumerate(names))
+
+
+def test_without_a_map_ids_resolve_positionally():
+    """Documents the trap: a 5-class checkpoint against a 9-class config."""
+    from rdd.model.loader import build_class_resolver
+
+    cfg = load_config("config.yaml")
+    r = build_class_resolver(_NamedModel(["D00", "D10", "D20", "D40", "Repair"]), cfg)
+    # D00 is a longitudinal crack, but index 0 of model.classes is "pothole".
+    assert r(0) == "pothole", "positional resolution is what class_map exists to fix"
+
+
+def test_class_map_translates_by_name():
+    from rdd.model.loader import build_class_resolver
+
+    cfg = load_config("config.yaml")
+    cfg.set_path("model.class_map", {
+        "D00": "longitudinal_crack", "D10": "transverse_crack",
+        "D20": "alligator_crack", "D40": "pothole", "Repair": None})
+    r = build_class_resolver(_NamedModel(["D00", "D10", "D20", "D40", "Repair"]), cfg)
+    assert [r(i) for i in range(4)] == [
+        "longitudinal_crack", "transverse_crack", "alligator_crack", "pothole"]
+
+
+def test_class_mapped_to_null_is_dropped():
+    """RDD2022's 'Repair' is a past intervention, not a defect."""
+    from rdd.model.loader import build_class_resolver
+
+    cfg = load_config("config.yaml")
+    cfg.set_path("model.class_map", {"D40": "pothole", "Repair": None})
+    r = build_class_resolver(_NamedModel(["D40", "Repair"]), cfg)
+    assert r(0) == "pothole"
+    assert r(1) is None, "a null mapping must drop the detection"
+
+
+def test_unmapped_checkpoint_class_keeps_its_own_name():
+    from rdd.model.loader import build_class_resolver
+
+    cfg = load_config("config.yaml")
+    cfg.set_path("model.class_map", {"D40": "pothole"})
+    r = build_class_resolver(_NamedModel(["D40", "Something"]), cfg)
+    assert r(1) == "Something", "better a visible raw name than a wrong one"
+
+
+def test_out_of_range_id_is_conspicuous():
+    from rdd.model.loader import build_class_resolver
+
+    cfg = load_config("config.yaml")
+    cfg.set_path("model.class_map", {"D40": "pothole"})
+    assert build_class_resolver(_NamedModel(["D40"]), cfg)(9) == "UNMAPPED_CLASS_9"
+
+
+# -- frame sampling ------------------------------------------------------------
+
+def test_sampler_spans_the_whole_clip(tmp_path):
+    """The bug this guards: taking the first N keyframes samples only the opening
+    stretch of a route and calls it representative."""
+    import subprocess
+
+    import cv2
+    import numpy as np
+
+    from rdd.utils.video import iter_sampled_frames
+
+    src = tmp_path / "clip.mp4"
+    w = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (160, 120))
+    rng = np.random.default_rng(0)
+    for _ in range(450):
+        w.write(rng.integers(0, 255, (120, 160, 3), dtype=np.uint8))
+    w.release()
+
+    got = list(iter_sampled_frames(src, 20))
+    assert len(got) >= 10, f"only {len(got)} samples"
+    idxs = [i for i, _ in got]
+    assert max(idxs) > 0.8 * 450, f"samples stop at frame {max(idxs)} of 450"
+    assert all(f.shape == (120, 160, 3) for _, f in got)
+
+
+def test_sampler_handles_a_clip_shorter_than_the_request(tmp_path):
+    import cv2
+    import numpy as np
+
+    from rdd.utils.video import iter_sampled_frames
+
+    src = tmp_path / "tiny.mp4"
+    w = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (64, 48))
+    for _ in range(5):
+        w.write(np.zeros((48, 64, 3), dtype=np.uint8))
+    w.release()
+    assert 0 < len(list(iter_sampled_frames(src, 60))) <= 60
+
+
+def test_sampler_rejects_a_missing_file(tmp_path):
+    from rdd.utils.video import iter_sampled_frames
+
+    with pytest.raises(RuntimeError):
+        list(iter_sampled_frames(tmp_path / "nope.mp4", 10))

@@ -206,6 +206,9 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
     segmenter = build_segmenter(cfg, view)
     segmenter.reset()
 
+    from ..model.loader import build_class_resolver
+    resolve_class = build_class_resolver(model, cfg)
+
     camera = getattr(calibration, "camera", None)
     zones = getattr(calibration, "zones", None)
     validity = ValidityChecker(cfg, camera=camera, zones=zones)
@@ -352,7 +355,7 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                 min_gate_confidence, occlusion_threshold, zones,
                 camera=camera, ground_maps=ground_maps, cfg=cfg, lin_cfg=lin_cfg,
                 linear_stats=result.linear, confuser_stats=result.confusers,
-                feats=frame_feats,
+                feats=frame_feats, resolve_class=resolve_class,
             )
 
             out = draw_frame(frame.copy(), detections, class_names, cfg,
@@ -412,7 +415,7 @@ def _collect(r, fh: int, fw: int, road, surf, counter: UniqueCounter, scaler,
              min_road_overlap: float, min_gate_confidence: float,
              occlusion_threshold: float, zones=None, camera=None,
              ground_maps=None, cfg=None, lin_cfg=None, linear_stats=None,
-             confuser_stats=None, feats=None) -> list[dict]:
+             confuser_stats=None, feats=None, resolve_class=None) -> list[dict]:
     """Turn one frame's tracker output into gated, annotated observations."""
     import cv2
 
@@ -456,15 +459,25 @@ def _collect(r, fh: int, fw: int, road, surf, counter: UniqueCounter, scaler,
             counter.rejected_off_road += 1
             continue
 
-        cls_name = (class_names[cid] if 0 <= cid < len(class_names)
-                    else f"UNMAPPED_CLASS_{cid}")
+        if resolve_class is not None:
+            cls_name = resolve_class(cid)
+            if not cls_name:
+                continue        # class_map sent this one to null - not reported
+        else:
+            cls_name = (class_names[cid] if 0 <= cid < len(class_names)
+                        else f"UNMAPPED_CLASS_{cid}")
 
         # Cracks are named by GEOMETRY, not by the model. Orientation is measured on
         # the road plane, where "along the road" vs "across it" is a direct
         # measurement instead of a perspective-confounded appearance cue, and
         # alligator cracking is identified by enclosed cells rather than texture.
+        # Only re-measure when there is a real segmentation mask. From a box-only
+        # detector the "mask" is a filled rectangle: it encloses no cells, so the
+        # alligator test would always fail and demote every D20 to a plain crack.
+        # A detection model's own class is better evidence than geometry on a rectangle.
         crack_geom = None
-        if cls_name in CRACK_SOURCES and camera is not None and ground_maps is not None:
+        if (cls_name in CRACK_SOURCES and mask_bool is not None
+                and camera is not None and ground_maps is not None):
             crack_geom = classify_crack(
                 geom, camera, scaler=scaler, cfg=cfg, lin=lin_cfg,
                 x_map=ground_maps[0], z_map=ground_maps[1])

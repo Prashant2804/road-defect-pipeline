@@ -196,39 +196,20 @@ def build_profile(cfg, samples: list[FrameQuality]) -> QualityProfile:
 
 
 def assess_video(video_path: str | Path, cfg) -> QualityProfile:
-    """Sample frames evenly across the clip and learn its quality distribution."""
-    import cv2
+    """Sample frames evenly across the clip and learn its quality distribution.
+
+    Sampling seeks rather than decoding the whole file. Which frame we get is not
+    important — we want a representative spread, not frame N — and on a long clip the
+    difference is decoding 60 frames instead of 30,000. Doing it the other way made a
+    quality pass over 4K dashcam footage take minutes.
+    """
+    from ..utils.video import iter_sampled_frames
 
     qc = cfg.get_path("quality.assess", {}) or {}
     n_target = max(2, int(qc.get("sample_frames", 60)))
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video for quality assessment: {video_path}")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-
-    samples: list[FrameQuality] = []
-    if total > 0:
-        # Sequential read with a stride: seeking by frame is unreliable on
-        # long-GOP H.264 and can silently hand back the wrong frame.
-        stride = max(1, total // n_target)
-        idx = -1
-        while len(samples) < n_target:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            idx += 1
-            if idx % stride == 0:
-                samples.append(measure_frame(frame, idx))
-    else:
-        idx = -1
-        while len(samples) < n_target:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            idx += 1
-            samples.append(measure_frame(frame, idx))
-    cap.release()
+    samples = [measure_frame(frame, idx)
+               for idx, frame in iter_sampled_frames(video_path, n_target)]
 
     if not samples:
         raise RuntimeError(f"No frames readable from {video_path}")

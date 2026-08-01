@@ -119,6 +119,35 @@ Optional: `exiftool` (richer embedded GPS), Video-Depth-Anything (depth stage).
 
 ---
 
+## Using a public checkpoint
+
+There is no fine-tuned model in this repo yet. The closest public fit is
+[rezzzq/yolo12s-road-damage-rdd2022](https://huggingface.co/rezzzq/yolo12s-road-damage-rdd2022)
+(MIT), whose RDD2022 classes cover four of the nine categories:
+
+```yaml
+model:
+  class_map:            # translate the checkpoint's OWN names onto our taxonomy
+    D00: longitudinal_crack
+    D10: transverse_crack
+    D20: alligator_crack
+    D40: pothole
+    Repair: null        # a past repair is not a defect
+```
+
+**`class_map` is not optional for a third-party checkpoint.** Detections carry an
+integer class id, so without it ids resolve *positionally*: a 5-class RDD2022 model
+against these 9 classes reports its `D00` (a longitudinal crack) as `pothole`, purely
+because both sit at index 0 — silently, with no error.
+
+Note it is a **detection** model, not segmentation. The pipeline handles boxes, but
+defect area becomes the box area, which overestimates badly for a thin diagonal crack.
+Alligator cracking also can't be confirmed by counting enclosed cells in a rectangle,
+so the model's own `D20` label is trusted instead. For real m² areas you want a
+segmentation model — e.g.
+[keremberke/yolov8n-pothole-segmentation](https://huggingface.co/keremberke/yolov8n-pothole-segmentation)
+for potholes alone — or your own `rdd train` run.
+
 ## Try it on Colab (GPU, no local install)
 
 `notebooks/colab_inference.ipynb` runs a trial inference on real footage with GPU

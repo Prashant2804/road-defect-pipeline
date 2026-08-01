@@ -442,6 +442,20 @@ model:
   fallback_arch: "yolo11-seg"
   size: "m"
   warm_start_weights: null
+
+  # Translate a checkpoint's OWN class names onto the taxonomy below. Essential for any
+  # public checkpoint: detections carry an integer id, so without a map a 5-class
+  # RDD2022 model against these 9 classes would label its D00 (longitudinal crack)
+  # "pothole" purely because both sit at index 0 - silently, with no error.
+  # Map a name to null to drop that class entirely.
+  # For huggingface.co/rezzzq/yolo12s-road-damage-rdd2022, uncomment:
+  # class_map:
+  #   D00: longitudinal_crack
+  #   D10: transverse_crack
+  #   D20: alligator_crack
+  #   D40: pothole
+  #   Repair: null            # a past repair, not a defect
+  class_map: {}
   # The output taxonomy. The three crack classes are NOT expected from the model —
   # a crack detector (generic `crack`, or RDD2022's D00/D10/D20) is re-measured on
   # the road plane and named by geometry in detect/linear.py, because the model's own
