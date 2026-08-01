@@ -77,27 +77,92 @@ inference ─→ ROAD SEG ─→ SURFACE ─→ VALIDITY GATE ─→ detect + tr
 
 ---
 
-## Install
+## Install — one command
+
+The setup script installs **everything**: Python (if missing), FFmpeg with the
+`v360` filter, a virtualenv, PyTorch (CUDA build if you have an NVIDIA GPU, CPU
+build otherwise), all requirements — then verifies it by importing every stage and
+running the test suite. Safe to re-run; each step is skipped if already satisfied.
+
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1                 # add -Cpu to force the CPU build of PyTorch
+```
+If PowerShell blocks the script: `powershell -ExecutionPolicy Bypass -File setup.ps1`
+
+**Linux / macOS:**
+```bash
+chmod +x setup.sh rdd.sh
+./setup.sh                  # add --cpu to force the CPU build
+```
+
+Then check it worked:
+```
+.\rdd.ps1 doctor        # Windows
+./rdd.sh doctor         # Linux/macOS
+```
+`doctor` prints versions, whether CUDA is live, whether FFmpeg has `v360`, and —
+usefully — **what your configured camera can actually resolve**, per class.
+
+<details><summary>Manual install, if you'd rather</summary>
 
 ```bash
-python -m venv .venv && . .venv/Scripts/activate    # PowerShell: .venv\Scripts\Activate.ps1
+python -m venv .venv && . .venv/bin/activate   # PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+# FFmpeg (required, needs the v360 filter):
+#   Windows: winget install Gyan.FFmpeg
+#   macOS:   brew install ffmpeg
+#   Linux:   sudo apt install ffmpeg
 ```
-
-**FFmpeg is required** — for the `v360` filter (360→flat, `.insv`) *and* as the
-H.264 encoder for output video.
-
-```powershell
-winget install Gyan.FFmpeg          # Windows
-# macOS: brew install ffmpeg   |   Linux: sudo apt install ffmpeg
-ffmpeg -hide_banner -filters | findstr v360     # verify (unix: | grep v360)
-```
-
 Optional: `exiftool` (richer embedded GPS), Video-Depth-Anything (depth stage).
+</details>
 
 ---
 
-## Quick start
+## Everyday commands
+
+Ultralytics/Roboflow-style `key=value` flags. The wrapper finds the virtualenv
+itself — no activation needed. Windows uses `.\rdd.ps1`, Linux/macOS `./rdd.sh`;
+the tasks and keys are identical.
+
+```bash
+./rdd.sh demo                                   # end-to-end on generated footage
+./rdd.sh doctor                                 # is my environment sane?
+
+./rdd.sh check    source=road.mp4 view=car_flat # road mask previews  <- DO THIS FIRST
+./rdd.sh detect   source=road.mp4 view=car_flat # full pipeline -> video + report
+./rdd.sh validity source=road.mp4               # which frames are assessable, and why not
+./rdd.sh quality  source=road.mp4               # sharpness / exposure / noise
+
+./rdd.sh preprocess source=road.mp4             # rectify + sample frames to label
+./rdd.sh label    frames=data/rectified         # which frames to label first
+./rdd.sh train    data=data/labels epochs=100   # fine-tune on your labels
+./rdd.sh val      truth=ground_truth.csv        # measure precision, pick thresholds
+```
+
+| Key | Meaning |
+|---|---|
+| `source=` | input video |
+| `view=` | `car_flat` (dashcam) / `car_360` / `drone_nadir` |
+| `weights=` | trained `.pt` |
+| `conf=` `imgsz=` `device=` | confidence, inference size, `cpu`/`cuda` |
+| `name=` `project=` | output goes to `<project>/<name>/` |
+
+**Any key in `config.yaml` works as an override** — anything with a dot passes
+straight through, so nothing needs editing to experiment:
+
+```bash
+./rdd.sh detect source=road.mp4 geometry.camera.height_m=1.35 geometry.camera.h_fov_deg=95
+./rdd.sh check  source=road.mp4 roadseg.classical.distance_tau=3.0 surface.mud.min_warmer_z=3.5
+```
+
+> **Measure your camera height and field of view.** They are what convert pixels to
+> metres, so a wrong height silently rescales every area, and the FOV sets how far
+> ahead each class can be assessed at all. `doctor` shows the resulting ranges.
+
+---
+
+## Quick start (direct `run.py`)
 
 ```bash
 # Vehicle, 360 equirectangular
