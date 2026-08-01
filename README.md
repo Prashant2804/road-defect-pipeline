@@ -119,6 +119,19 @@ Optional: `exiftool` (richer embedded GPS), Video-Depth-Anything (depth stage).
 
 ---
 
+## Try it on Colab (GPU, no local install)
+
+`notebooks/colab_inference.ipynb` runs a trial inference on real footage with GPU
+acceleration: pulls a video from Google Drive, loads weights (Drive / URL / upload),
+lets you set camera geometry, previews the road mask before committing, then produces
+the annotated video, `defects.csv`, `segments.csv` and `report.html` — all downloadable
+or written back to Drive.
+
+Open it from GitHub with *Open in Colab*, or upload the `.ipynb` directly.
+
+> The repo is private, so the notebook clones with a GitHub token from Colab Secrets
+> (`GITHUB_TOKEN`). There is a zip-upload fallback if you would rather not use one.
+
 ## Everyday commands
 
 Ultralytics/Roboflow-style `key=value` flags. The wrapper finds the virtualenv
