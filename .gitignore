@@ -10,6 +10,10 @@ venv/
 data/raw/*
 data/rectified/*
 data/labels/*
+# Repaired dataset copies from tools/fix_labels.py --out. Regenerable from the
+# Roboflow export in one command, and a few hundred images is not review material.
+data/mp_road/
+data/*_clean/
 !data/**/.gitkeep
 out/
 weights/*.pt
