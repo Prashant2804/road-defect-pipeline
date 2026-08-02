@@ -119,6 +119,26 @@ Optional: `exiftool` (richer embedded GPS), Video-Depth-Anything (depth stage).
 
 ---
 
+## If a run is slow
+
+The GPU is usually **not** the bottleneck, so raising `imgsz` makes things slower, not
+faster. The per-frame cost is dominated by CPU work — road segmentation, surface
+analysis, optical flow — with the GPU idle in between. The lever that matters is doing
+that work on fewer frames:
+
+```bash
+./rdd.sh detect source=road.mp4 preset=fast     # ~2.5x, detects every 3rd frame
+./rdd.sh detect source=road.mp4 preset=turbo    # first look at long footage
+```
+
+At 30 fps and 30 km/h the vehicle advances ~28 cm per frame, so consecutive frames
+re-inspect the same tarmac — `frame_stride: 3` costs very little real coverage. Skipped
+frames are still written to the annotated video, so the output stays a complete record.
+
+`min_track_len` scales automatically with the stride. It is a requirement about
+persistence *in time* but is counted in processed frames, so without scaling, raising
+the stride would quietly make it stricter and drop short-lived defects from the report.
+
 ## Using a public checkpoint
 
 There is no fine-tuned model in this repo yet. The closest public fit is
@@ -188,6 +208,7 @@ the tasks and keys are identical.
 | `view=` | `car_flat` (dashcam) / `car_360` / `drone_nadir` |
 | `weights=` | trained `.pt` |
 | `conf=` `imgsz=` `device=` | confidence, inference size, `cpu`/`cuda` |
+| `preset=` | `fast` (~2.5x) / `turbo` (first look) / `accurate` |
 | `name=` `project=` | output goes to `<project>/<name>/` |
 
 **Any key in `config.yaml` works as an override** — anything with a dot passes

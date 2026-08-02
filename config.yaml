@@ -619,6 +619,14 @@ inference:
   conf: 0.25
   iou: 0.5
   imgsz: 960                       # raise toward native width for small cracks
+  # SPEED. Detect on every Nth frame. The biggest lever by far, and nearly free in
+  # coverage: at 30 fps / 30 km/h the vehicle advances ~28 cm per frame, so consecutive
+  # frames re-inspect the same tarmac. Skipped frames are still written to the
+  # annotated video, so the output remains a complete record.
+  #   1 = every frame (slowest)   3 = a good default for 30 fps   5+ = quick survey
+  frame_stride: 1
+  half: true                       # fp16 on CUDA; ~2x faster, no visible difference
+  log_every: 200                   # progress line every N processed frames
   tracker: "botsort"               # botsort | bytetrack
   tracker_cfg: null
   min_track_len: 3                 # frames a track must persist to count

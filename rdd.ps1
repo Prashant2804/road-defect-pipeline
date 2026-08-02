@@ -98,6 +98,8 @@ function CommonArgs {
     if ($conf) { $a += @('--set', "inference.conf=$conf") }
     $imgsz = Opt 'imgsz'
     if ($imgsz) { $a += @('--set', "inference.imgsz=$imgsz") }
+    $preset = Opt 'preset'
+    if ($preset) { $a += @('--preset', $preset) }
     return $a
 }
 
@@ -266,6 +268,7 @@ switch ($Task.ToLower()) {
       conf=0.35                confidence threshold
       imgsz=1280               inference size
       device=cpu               cpu | cuda | cuda:0
+      preset=fast              fast (~3x) | turbo (~8x) | accurate
       name=myrun               output goes to out\<name>\
       project=out              output root
 

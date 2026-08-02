@@ -153,7 +153,7 @@ class ValidityChecker:
         return self._zone_mask
 
     def check(self, frame_idx: int, t: float, frame, road=None, surface=None,
-              quality=None, distance_m: float = 0.0) -> FrameVerdict:
+              quality=None, distance_m: float = 0.0, gap: int = 1) -> FrameVerdict:
         """Run every gate and combine the results."""
         import numpy as np
 
@@ -165,7 +165,7 @@ class ValidityChecker:
         h, w = frame.shape[:2]
         zone = self.zone_mask(w, h)
 
-        ego = self.ego.update(frame)
+        ego = self.ego.update(frame, gap=gap)
         moving = bool(getattr(ego, "valid", False)) and ego.flow_px > 0.6
         horizon = self.camera.horizon_row if self.camera is not None else None
         static_mask = self.static.update(frame, moving, horizon)

@@ -84,7 +84,13 @@ class EgoMotionEstimator:
             minDistance=self.min_distance, blockSize=7,
         )
 
-    def update(self, frame) -> EgoMotion:
+    def update(self, frame, gap: int = 1) -> EgoMotion:
+        """`gap` is how many source frames elapsed since the last call.
+
+        Motion is reported PER SOURCE FRAME regardless. Without this, running with
+        inference.frame_stride=3 would triple every measured flow and the
+        "is the vehicle stopped" threshold would silently stop firing.
+        """
         import cv2
         import numpy as np
 
@@ -157,9 +163,9 @@ class EgoMotionEstimator:
 
         return EgoMotion(
             valid=True,
-            flow_px=flow_px,
-            radial=radial / self._scale,
-            yaw_px=yaw_px / self._scale,
-            pitch_px=pitch_px / self._scale,
+            flow_px=flow_px / max(1, gap),
+            radial=radial / self._scale / max(1, gap),
+            yaw_px=yaw_px / self._scale / max(1, gap),
+            pitch_px=pitch_px / self._scale / max(1, gap),
             n_tracks=int(len(p0)),
         )

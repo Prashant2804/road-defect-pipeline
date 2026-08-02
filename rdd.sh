@@ -81,6 +81,7 @@ common_args() {
   [ -n "$(opt name)"    ] && a+=(--set "run.name=$(opt name)")
   [ -n "$(opt conf)"    ] && a+=(--set "inference.conf=$(opt conf)")
   [ -n "$(opt imgsz)"   ] && a+=(--set "inference.imgsz=$(opt imgsz)")
+  [ -n "$(opt preset)"  ] && a+=(--preset "$(opt preset)")
   printf '%s\n' "${a[@]+"${a[@]}"}"
 }
 # shellcheck disable=SC2207
@@ -223,6 +224,7 @@ cat <<'HELP'
       conf=0.35                confidence threshold
       imgsz=1280               inference size
       device=cpu               cpu | cuda | cuda:0
+      preset=fast              fast (~3x) | turbo (~8x) | accurate
       name=myrun               output goes to out/<name>/
       project=out              output root
 

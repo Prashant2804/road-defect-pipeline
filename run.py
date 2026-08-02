@@ -22,11 +22,53 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 
+# Speed presets. Each trades detection *density* for throughput; none changes how a
+# detection is measured once found.
+# Deliberately NOT included: quality.assess.sample_frames. Lowering it looks like a
+# free speedup but it changes the learned sharpness threshold — a noisier median from
+# fewer samples — and measurably started gating out real frames (30 of 60 on a test
+# clip). A preset must not silently change which frames get assessed.
+# The dominant cost on long footage is per-frame CPU work (road segmentation, surface
+# analysis, optical flow) running while the GPU idles — so the levers that matter are
+# "do it on fewer frames", not "make the GPU work harder".
+_PRESETS = {
+    "fast": {
+        "inference.frame_stride": 3,      # ~28 cm of road between frames at 30 km/h
+        "roadseg.stride": 3,
+        "surface.stride": 3,
+        "detect.conditions_stride": 15,
+        "validity.traffic.stride": 9,
+        "validity.egomotion.work_width": 320,
+    },
+    "turbo": {
+        # For a first look at long footage. Coverage per metre drops noticeably.
+        "inference.frame_stride": 8,
+        "roadseg.stride": 8,
+        "surface.stride": 8,
+        "detect.conditions_stride": 40,
+        "validity.traffic.enabled": False,
+        "validity.egomotion.work_width": 256,
+        "inference.imgsz": 768,
+    },
+    "accurate": {
+        "inference.frame_stride": 1,
+        "roadseg.stride": 1,
+        "surface.stride": 1,
+        "detect.conditions_stride": 3,
+    },
+}
+
+
 def _overrides(args) -> dict:
     """CLI flags as dotted config overrides."""
     import yaml
 
     out = {}
+    preset = getattr(args, "preset", None)
+    if preset:
+        if preset not in _PRESETS:
+            raise SystemExit(f"Unknown preset {preset!r}; choose from {sorted(_PRESETS)}")
+        out.update(_PRESETS[preset])
     if getattr(args, "view", None):
         out["view.profile"] = args.view
     if getattr(args, "device", None):
@@ -402,6 +444,8 @@ def _common(sp, *, view: bool = True) -> None:
     sp.add_argument("--set", action="append", metavar="KEY=VALUE", default=None,
                     help="override any config key, e.g. "
                          "--set view.drone.gsd_m_per_px=0.02 (repeatable)")
+    sp.add_argument("--preset", default=None, choices=sorted(_PRESETS),
+                    help="speed preset: fast (~3x), turbo (~8x, first look), accurate")
     if view:
         sp.add_argument("--view", default=None,
                         choices=["car_360", "car_flat", "drone_nadir"],

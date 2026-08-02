@@ -21,6 +21,7 @@ detection, which the built-in dataloader gives no hook for.
 """
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -122,6 +123,19 @@ class InferenceResult:
         }
 
 
+def _precision_kwargs() -> dict:
+    """{'quantize': True} or {'half': True}, whichever this ultralytics understands."""
+    try:
+        from ultralytics.cfg import DEFAULT_CFG_DICT
+    except Exception:
+        return {}
+    if "quantize" in DEFAULT_CFG_DICT:
+        return {"quantize": True}
+    if "half" in DEFAULT_CFG_DICT:
+        return {"half": True}
+    return {}
+
+
 def _tracker_yaml(cfg) -> str:
     custom = cfg.get_path("inference.tracker_cfg")
     if custom:
@@ -197,9 +211,40 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
         and profile is not None and profile.enabled
     )
 
+    # Detect on every Nth frame. This is the single biggest speed lever, and it costs
+    # almost nothing in coverage: at 30 fps and 30 km/h the vehicle advances ~28 cm per
+    # frame, so consecutive frames re-inspect the same tarmac. Skipped frames are still
+    # WRITTEN to the annotated video (with the previous overlay) so the output stays a
+    # complete record rather than a silently shortened one.
+    frame_stride = max(1, int(ic.get("frame_stride", 1)))
+    # fp16 roughly halves GPU inference time on any modern card and makes no visible
+    # difference to detections at these confidences. The keyword was renamed between
+    # ultralytics versions ("half" -> "quantize"), and passing the wrong one prints a
+    # deprecation warning on EVERY frame, so ask the installed build which it accepts
+    # rather than pinning a version.
+    precision_kwargs = {}
+    if bool(ic.get("half", True)) and str(device).startswith("cuda"):
+        precision_kwargs = _precision_kwargs()
+    log_every = max(1, int(ic.get("log_every", 200)))
+    if frame_stride > 1:
+        log.info("Detecting every %d frames (skipped frames are still written to the "
+                 "annotated video)", frame_stride)
+
+    # min_track_len is a requirement about PERSISTENCE IN TIME, but it is counted in
+    # processed frames — so raising frame_stride silently makes it stricter. At stride
+    # 3 a defect visible for 9 source frames is only seen 3 times, and one visible for
+    # 6 disappears from the report entirely. Measured: a test clip went from 1 unique
+    # defect to 0 purely from the stride. Scaling keeps the temporal meaning constant.
+    _base_track_len = int(ic.get("min_track_len", 3))
+    _eff_track_len = max(2, round(_base_track_len / max(1, frame_stride)))
+    if _eff_track_len != _base_track_len:
+        log.info("min_track_len %d -> %d to match frame_stride %d (same persistence "
+                 "in time, fewer frames to see it in)",
+                 _base_track_len, _eff_track_len, frame_stride)
+
     counter = UniqueCounter(
         class_names,
-        min_track_len=int(ic.get("min_track_len", 3)),
+        min_track_len=_eff_track_len,
         occlusion_threshold=occlusion_threshold,
         occluder_classes=occluders,
     )
@@ -226,6 +271,7 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video for inference: {video_path}")
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     out_fps = float(rc.get("fps") or src_fps)
 
     annotated_path = out_dir / "annotated.mp4"
@@ -243,6 +289,10 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
     road = None
     surf = None
     frame_idx = -1
+    last_detections: list[dict] = []
+    last_overlay = None
+    processed = 0
+    t_start = _time.time()
 
     try:
         while True:
@@ -251,6 +301,20 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                 break
             frame_idx += 1
             result.frames_total += 1
+
+            # Skip cheaply: no quality measure, no enhancement, no segmentation, no
+            # detection. Frame 0 always runs, so the writer exists by the time any
+            # frame is skipped. Skipped frames are still WRITTEN, under the previous
+            # overlay, so the annotated video stays a complete record of the drive
+            # rather than a silently shortened one.
+            if frame_stride > 1 and (frame_idx % frame_stride):
+                if writer is not None:
+                    out = enhance_frame(raw, spec) if spec.enabled else raw
+                    if road is not None:
+                        out = draw_frame(out, last_detections, class_names, cfg,
+                                         road=road, surface=surf)
+                    writer.write(out)
+                continue
 
             quality = judge(measure_frame(raw, frame_idx), profile) \
                 if drop_unusable else None
@@ -283,7 +347,8 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                 if d_now is not None and d_prev is not None:
                     step_m = max(0.0, d_now - d_prev)
             verdict = validity.check(frame_idx, t, frame, road=road, surface=surf,
-                                     quality=quality, distance_m=step_m)
+                                      quality=quality, distance_m=step_m,
+                                      gap=frame_stride)
 
             if not verdict.assessable:
                 result.frames_skipped_quality += 1
@@ -344,6 +409,7 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
                 source=det_input, persist=True, tracker=_tracker_yaml(cfg),
                 conf=float(ic.get("conf", 0.25)), iou=float(ic.get("iou", 0.5)),
                 imgsz=int(ic.get("imgsz", 960)), device=device, verbose=False,
+                **precision_kwargs,
             )
             result.frames_detected += 1
             r = results[0] if results else None
@@ -370,6 +436,16 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
             if verdict.degraded:
                 out = draw_quality_banner(out, verdict.degrade_reasons)
             writer.write(out)
+            last_detections, last_overlay = detections, True
+
+            processed += 1
+            if processed % log_every == 0:
+                elapsed = max(1e-6, _time.time() - t_start)
+                rate = (frame_idx + 1) / elapsed
+                remaining = (total_frames - frame_idx - 1) / rate if total_frames else 0
+                log.info("  frame %d/%s  %.1f fps  %s",
+                         frame_idx + 1, total_frames or "?", rate,
+                         f"~{remaining / 60:.1f} min left" if remaining > 0 else "")
     finally:
         cap.release()
         if writer is not None:
