@@ -1,0 +1,12 @@
+path: C:\Users\kumar prashant\road-defect-pipeline\data\mp_road
+train: train/images
+val: valid/images
+test: test/images
+nc: 6
+names:
+- alligator_crack
+- drainage_issue
+- longitudinal_crack
+- pothole
+- ravelling
+- edge_damage

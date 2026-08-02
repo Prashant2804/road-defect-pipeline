@@ -140,7 +140,8 @@ def build_class_resolver(model, cfg):
     return by_name
 
 
-def load_model(cfg, weights: str | None = None, task: str | None = None):
+def load_model(cfg, weights: str | None = None, task: str | None = None,
+               check_alignment: bool = True):
     """Return an ultralytics YOLO model. `weights` overrides everything (used at
     inference to load a trained .pt).
 
@@ -191,5 +192,6 @@ def load_model(cfg, weights: str | None = None, task: str | None = None):
                         primary, e, fallback)
             model = YOLO(fallback)
 
-    check_class_alignment(model, cfg)
+    if check_alignment:
+        check_class_alignment(model, cfg)
     return model

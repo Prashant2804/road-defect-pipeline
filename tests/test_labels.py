@@ -255,3 +255,34 @@ def test_task_is_read_from_the_labels_not_the_config(tmp_path):
 
     assert _infer_task(box_ds / "data.yaml") == "detect"
     assert _infer_task(poly_ds / "data.yaml") == "segment"
+
+
+# --------------------------------------------------------------------------- device
+
+def test_explicit_cuda_request_fails_loudly_when_strict(monkeypatch):
+    """A fine-tune must not quietly become a ten-hour CPU run.
+
+    This happened: `--device cuda` on a CUDA-less laptop logged one warning, which
+    scrolled past inside ultralytics' startup banner, and training ran on CPU at
+    22 s/iteration.
+    """
+    import torch
+
+    from rdd.utils.device import resolve_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(SystemExit, match="no CUDA-capable GPU"):
+        resolve_device("cuda", strict=True)
+
+
+def test_non_strict_callers_still_fall_back(monkeypatch):
+    """Inference is short enough that CPU is a reasonable answer, so the default
+    behaviour must not change."""
+    import torch
+
+    from rdd.utils.device import resolve_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert resolve_device("cuda") == "cpu"
+    assert resolve_device("auto", strict=True) == "cpu", "auto never errors"
+    assert resolve_device("cpu", strict=True) == "cpu"

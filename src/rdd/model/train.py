@@ -62,8 +62,17 @@ def train(cfg, labels_root: str | Path | None = None, fps: float = 30.0,
     task = task or _infer_task(data_yaml)
     log.info("Training as task=%s (from the label geometry)", task)
 
-    model = load_model(cfg, task=task)  # warm-start / arch resolved inside
-    device = resolve_device(cfg.get_path("run.device", "auto"))
+    # Resolve the device BEFORE touching the model: load_model downloads tens of MB of
+    # architecture weights, and failing after that wastes the download.
+    # strict: a fine-tune silently dropping to CPU costs hours, and the warning is
+    # buried in ultralytics' startup banner where nobody sees it until it is too late.
+    device = resolve_device(cfg.get_path("run.device", "auto"), strict=True)
+
+    # check_alignment=False: the warm-start is a COCO checkpoint whose 80-class head is
+    # about to be discarded and rebuilt with nc from data.yaml. Warning that its
+    # classes disagree with model.classes is true and useless here, and it reads as if
+    # training is misconfigured when it is not.
+    model = load_model(cfg, task=task, check_alignment=False)
     seed = cfg.get_path("run.seed", 0)
 
     log.info("Fine-tuning on %s (device=%s)", data_yaml, device)
