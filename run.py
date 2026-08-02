@@ -10,7 +10,12 @@ Individual stages (each runnable on its own):
     python run.py roadseg    --input <video> --config config.yaml   # mask preview
     python run.py annotate   --frames data/rectified --config config.yaml
     python run.py train      --labels data/labels --config config.yaml
+    python run.py train      --data   <export>/data.yaml     # already-split dataset
     python run.py infer      --input <rectified.mp4> --config config.yaml
+
+Before training on someone else's export, check it:
+    python tools/check_labels.py --labels <export>
+    python tools/fix_labels.py   --labels <export> --out data/clean --to box --rename
 """
 from __future__ import annotations
 
@@ -372,7 +377,11 @@ def _cmd_train(args):
     setup_logging()
     cfg = _load(args)
     set_seeds(int(cfg.get_path("run.seed", 0)))
-    best = train(cfg, labels_root=args.labels, fps=args.fps)
+    if not args.labels and not args.data:
+        raise SystemExit("Give either --labels (a flat images/ + labels/ folder, split "
+                         "here by segment) or --data (an already-split data.yaml).")
+    best = train(cfg, labels_root=args.labels, fps=args.fps,
+                 data_yaml=args.data, task=args.task)
     print(f"Best weights: {best}")
 
 
@@ -500,7 +509,14 @@ def build_parser() -> argparse.ArgumentParser:
     se.set_defaults(func=_cmd_evaluate)
 
     st = sub.add_parser("train", help="fine-tune on labels (segment-split)")
-    st.add_argument("--labels", default=None)
+    st.add_argument("--labels", default=None,
+                    help="flat images/ + labels/ folder; split here by segment")
+    st.add_argument("--data", default=None,
+                    help="data.yaml of an already-split dataset (e.g. a Roboflow "
+                         "export). Check it with tools/check_labels.py first — this "
+                         "path trusts the split as given.")
+    st.add_argument("--task", choices=["detect", "segment"], default=None,
+                    help="override the task; by default it is read from the labels")
     st.add_argument("--fps", type=float, default=30.0)
     _common(st, view=False)
     st.set_defaults(func=_cmd_train)

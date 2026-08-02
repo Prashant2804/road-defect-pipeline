@@ -460,6 +460,18 @@ model:
   #   D20: alligator_crack
   #   D40: pothole
   #   Repair: null            # a past repair, not a defect
+  # Set this when running the MP_Road_Annotation_POC fine-tune. The names below are
+  # already valid taxonomy names, so the map looks like a no-op — it is not. That
+  # checkpoint has 6 classes in ITS own order, and detections resolve positionally, so
+  # without the map id 0 ("alligator_crack" there) would be read as "pothole" here and
+  # every class in the report would be shifted.
+  # class_map:
+  #   alligator_crack: alligator_crack
+  #   drainage_issue: drainage_issue
+  #   longitudinal_crack: longitudinal_crack
+  #   pothole: pothole
+  #   ravelling: ravelling
+  #   edge_damage: edge_damage
   class_map: {}
   # The output taxonomy. The three crack classes are NOT expected from the model —
   # a crack detector (generic `crack`, or RDD2022's D00/D10/D20) is re-measured on

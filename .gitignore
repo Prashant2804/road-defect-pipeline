@@ -24,6 +24,10 @@ weights/*.pt
 *.onnx
 *.engine
 
+# Training scratch. Ultralytics writes here, and MLflow logs one file per
+# hyperparameter — a single run adds ~150 files nobody wants in review.
+runs/
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -140,14 +140,27 @@ def build_class_resolver(model, cfg):
     return by_name
 
 
-def load_model(cfg, weights: str | None = None):
+def load_model(cfg, weights: str | None = None, task: str | None = None):
     """Return an ultralytics YOLO model. `weights` overrides everything (used at
-    inference to load a trained .pt)."""
+    inference to load a trained .pt).
+
+    `task` forces detect or segment regardless of what `model.arch` says. Needed
+    because the architecture and the LABELS have to agree: handing box annotations to
+    a `-seg` model fails, and the dataset decides which you have, not the config.
+    """
     from ultralytics import YOLO
 
     mc = cfg.get_path("model", {}) or {}
     size = mc.get("size", "m")
     model = None
+
+    def _for_task(arch: str) -> str:
+        """Adjust an arch string to the requested task ('yolo11-seg' <-> 'yolo11')."""
+        if task == "detect":
+            return arch.replace("-seg", "")
+        if task == "segment" and "-seg" not in arch and not arch.endswith(".pt"):
+            return f"{arch}-seg"
+        return arch
 
     # 1. explicit weights (trained model) win.
     if weights:
@@ -168,8 +181,8 @@ def load_model(cfg, weights: str | None = None):
 
     # 3. arch with fallback.
     if model is None:
-        primary = _arch_to_weight(mc.get("arch", "yolo11-seg"), size)
-        fallback = _arch_to_weight(mc.get("fallback_arch", "yolo11-seg"), size)
+        primary = _arch_to_weight(_for_task(mc.get("arch", "yolo11-seg")), size)
+        fallback = _arch_to_weight(_for_task(mc.get("fallback_arch", "yolo11-seg")), size)
         try:
             log.info("Loading architecture weights: %s", primary)
             model = YOLO(primary)
