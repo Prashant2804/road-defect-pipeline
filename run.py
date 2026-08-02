@@ -369,6 +369,70 @@ def _cmd_evaluate(args):
           "filtering the rest in the report.")
 
 
+def _cmd_val(args):
+    """Score a checkpoint on a held-out split.
+
+    Deliberately separate from `evaluate`, which measures precision per unique
+    multi-frame-confirmed defect on VIDEO — the contract the 90% target is written
+    against. This is the narrower per-image question: did training work at all.
+    A model can score well here and still miss the target there, because a per-image
+    mAP says nothing about whether the same pothole is confirmed across frames.
+    """
+    from ultralytics import YOLO
+
+    from rdd.utils.device import resolve_device
+    from rdd.utils.logging import setup_logging
+
+    setup_logging()
+    cfg = _load(args)
+    device = resolve_device(args.device or cfg.get_path("run.device", "auto"))
+    model = YOLO(args.weights)
+
+    names = (model.names if isinstance(model.names, dict)
+             else dict(enumerate(model.names or [])))
+    print(f"\n{args.weights}")
+    print(f"  task    : {getattr(model, 'task', '?')}")
+    print(f"  classes : {[names[k] for k in sorted(names)]}")
+    print(f"  split   : {args.split}\n")
+
+    out_dir = (Path(cfg.get_path("run.output_dir", "out"))
+               / cfg.get_path("run.name", "default")).resolve()
+    m = model.val(data=args.data, split=args.split, device=device,
+                  imgsz=int(args.imgsz or cfg.get_path("model.train.imgsz", 640)),
+                  conf=args.conf, plots=True, verbose=True,
+                  project=str(out_dir), name=f"val_{args.split}", exist_ok=True)
+
+    # The per-class table is the point. A healthy "all" row is dominated by whichever
+    # class has the most instances and routinely hides a class that never fires.
+    print(f"\n{'class':<24}{'P':>9}{'R':>9}{'mAP50':>9}{'mAP50-95':>10}")
+    scored = set()
+    try:
+        for i, c in enumerate(m.box.ap_class_index):
+            p, r, ap50, ap = m.box.class_result(i)
+            scored.add(int(c))
+            if r <= 0:
+                flag = "   <- finds nothing"
+            elif ap50 < 0.05:
+                flag = "   <- fires, but not usefully"
+            else:
+                flag = ""
+            print(f"{names.get(int(c), c):<24}{p:>9.3f}{r:>9.3f}{ap50:>9.3f}"
+                  f"{ap:>10.3f}{flag}")
+        print(f"{'all':<24}{m.box.mp:>9.3f}{m.box.mr:>9.3f}"
+              f"{m.box.map50:>9.3f}{m.box.map:>10.3f}")
+    except Exception as e:  # metric layout varies across ultralytics versions
+        print(f"  (per-class table unavailable: {e})")
+
+    # A class absent from the split is not a class that scored zero — it was never
+    # tested. Silently omitting it from the table reads as a pass.
+    untested = [names[k] for k in sorted(names) if k not in scored]
+    if untested:
+        print(f"\n  NOT TESTED — no instances of {untested} in the '{args.split}' "
+              f"split.\n  These rows are missing above, not zero. This split says "
+              f"nothing about them.")
+    print(f"\nPlots -> {m.save_dir}")
+
+
 def _cmd_train(args):
     from rdd.model.train import train
     from rdd.utils.logging import setup_logging
@@ -520,6 +584,18 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--fps", type=float, default=30.0)
     _common(st, view=False)
     st.set_defaults(func=_cmd_train)
+
+    sv = sub.add_parser("val", help="score a checkpoint on a held-out split")
+    sv.add_argument("--weights", required=True)
+    sv.add_argument("--data", required=True, help="data.yaml of the dataset")
+    sv.add_argument("--split", default="test", choices=["train", "val", "test"])
+    sv.add_argument("--imgsz", type=int, default=None,
+                    help="defaults to model.train.imgsz — match how it was trained")
+    sv.add_argument("--conf", type=float, default=0.001,
+                    help="low by design: mAP is an area under the PR curve, so raising "
+                         "this truncates the curve and understates the model")
+    _common(sv, view=False)
+    sv.set_defaults(func=_cmd_val)
 
     si = sub.add_parser("infer", help="detect+track+report on a rectified video")
     si.add_argument("--input", required=True)
