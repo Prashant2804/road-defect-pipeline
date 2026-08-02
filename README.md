@@ -181,6 +181,11 @@ Open it from GitHub with *Open in Colab*, or upload the `.ipynb` directly.
 > The repo is private, so the notebook clones with a GitHub token from Colab Secrets
 > (`GITHUB_TOKEN`). There is a zip-upload fallback if you would rather not use one.
 
+Mid-session, the **Update** cell (right after Clone) pulls new commits in place rather
+than re-cloning, so the downloaded video, weights and form settings survive. It also
+clears cached `rdd.*` modules — without that, in-process cells keep running the old
+code even though the files on disk changed.
+
 ## Everyday commands
 
 Ultralytics/Roboflow-style `key=value` flags. The wrapper finds the virtualenv
