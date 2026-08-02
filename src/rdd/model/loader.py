@@ -53,19 +53,29 @@ def check_class_alignment(model, cfg) -> bool:
     if not actual or not configured:
         return True
 
+    has_map = bool(cfg.get_path("model.class_map"))
     if len(actual) != len(configured):
+        if has_map:
+            # A count mismatch is the NORMAL case for a mapped third-party checkpoint,
+            # and shouting "any output will be mislabelled" here would be wrong — the
+            # map is what makes it right.
+            log.info(
+                "Checkpoint has %d classes %s; model.classes lists %d. Resolved by "
+                "name through model.class_map.", len(actual), actual[:6], len(configured))
+            return True
         log.warning(
             "CLASS MISMATCH: the loaded checkpoint has %d classes %s but "
-            "model.classes lists %d %s. Detections are mapped by index, so any "
-            "output will be mislabelled. This is expected for a stock COCO "
-            "checkpoint — fine-tune on your own labels (python run.py train) "
-            "before trusting counts.",
+            "model.classes lists %d %s. Detections are mapped BY INDEX, so labels "
+            "will be wrong. Set model.class_map to translate by name, or fine-tune "
+            "on your own labels.",
             len(actual), actual[:6] + (["..."] if len(actual) > 6 else []),
             len(configured), configured,
         )
         return False
 
     if [n.lower() for n in actual] != [c.lower() for c in configured]:
+        if has_map:
+            return True
         log.warning(
             "CLASS ORDER MISMATCH: checkpoint classes %s differ from "
             "model.classes %s. Same count, so nothing will error — but labels "

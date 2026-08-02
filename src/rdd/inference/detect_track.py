@@ -124,13 +124,28 @@ class InferenceResult:
 
 
 def _precision_kwargs() -> dict:
-    """{'quantize': True} or {'half': True}, whichever this ultralytics understands."""
+    """fp16 kwargs for whichever ultralytics is installed, or {} if unsupported.
+
+    Checking that the key exists is not enough, and assuming otherwise crashed a run:
+    8.4 renamed `half` to `quantize` but also changed its TYPE — `half` was a bool,
+    `quantize` takes a precision like 'fp16'. Passing `quantize=True` raises
+    "'quantize=True' is invalid" at the first frame. So the value is validated against
+    the installed build's own list rather than guessed.
+    """
     try:
         from ultralytics.cfg import DEFAULT_CFG_DICT
     except Exception:
         return {}
+
     if "quantize" in DEFAULT_CFG_DICT:
-        return {"quantize": True}
+        try:
+            from ultralytics.cfg import QUANTIZE_ALIASES
+
+            if "fp16" in QUANTIZE_ALIASES:
+                return {"quantize": "fp16"}
+        except Exception:
+            pass
+        return {"quantize": "fp16"}
     if "half" in DEFAULT_CFG_DICT:
         return {"half": True}
     return {}
@@ -405,12 +420,23 @@ def run_inference(video_path, model, cfg, gps: GpsTrack | None = None,
 
                 det_input = np.where(road.mask[..., None], frame, 0)
 
-            results = model.track(
+            track_kwargs = dict(
                 source=det_input, persist=True, tracker=_tracker_yaml(cfg),
                 conf=float(ic.get("conf", 0.25)), iou=float(ic.get("iou", 0.5)),
                 imgsz=int(ic.get("imgsz", 960)), device=device, verbose=False,
-                **precision_kwargs,
             )
+            try:
+                results = model.track(**track_kwargs, **precision_kwargs)
+            except (ValueError, TypeError) as e:
+                # Precision flags are a pure optimisation; never let one abort a run.
+                # Ultralytics has changed both the name and the type of this argument
+                # across versions, so degrade to full precision and say so once.
+                if not precision_kwargs:
+                    raise
+                log.warning("Disabling fp16 for this run: %s (%s)",
+                            precision_kwargs, str(e).split(".")[0])
+                precision_kwargs = {}
+                results = model.track(**track_kwargs)
             result.frames_detected += 1
             r = results[0] if results else None
 

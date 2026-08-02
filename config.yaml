@@ -228,6 +228,11 @@ preprocess:
     ground_extent_m: null
 
   sampling:
+    # Writes the frames you will LABEL. Switch off for a pure inference run: without
+    # GPS this is the most expensive stage in the pipeline, because distance has to be
+    # estimated by dense optical flow on every frame.
+    enabled: true
+    flow_work_width: 480           # downscale before optical flow (>15x cheaper)
     mode: "distance"               # distance | time | every_n
     distance_m: 2.0
     time_s: 0.5

@@ -67,6 +67,11 @@ def _optical_flow_step(prev_gray, gray) -> float:
 
     Not metric — used only to *space out* samples evenly when GPS is absent. The
     scale is arbitrary but monotonic with real motion.
+
+    Run on downscaled frames: this is dense Farneback, whose cost is proportional to
+    pixel count, and it runs on every frame. At 1920x1080 it took 12 minutes over a
+    30-second clip. A ~480px working width is over 15x cheaper and makes no difference
+    to a measure that is only ever compared against itself.
     """
     import cv2
     import numpy as np
@@ -75,12 +80,30 @@ def _optical_flow_step(prev_gray, gray) -> float:
     return float(np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2).mean())
 
 
+def _flow_gray(frame, work_width: int):
+    """Greyscale, downscaled copy for optical flow."""
+    import cv2
+
+    h, w = frame.shape[:2]
+    if work_width and w > work_width:
+        scale = work_width / float(w)
+        frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
+                           interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+
 def sample_frames(video_path: Path, out_dir: Path, gps: GpsTrack, cfg,
                   profile: QualityProfile | None = None,
                   spec: EnhanceSpec | None = None) -> SamplingResult:
     import cv2
 
     sc = cfg.get_path("preprocess.sampling", {}) or {}
+    if not sc.get("enabled", True):
+        # Sampling exists to build a LABELING set. A pure inference run does not need
+        # it, and on GPS-less footage it is the single most expensive stage because
+        # distance has to be estimated by optical flow on every frame.
+        log.info("Frame sampling disabled — no labeling frames will be written")
+        return SamplingResult(frames_dir=str(out_dir), mode="disabled")
     mode = sc.get("mode", "distance")
     out_dir = Path(out_dir)
     save = bool(sc.get("save_frames", True))
@@ -105,6 +128,7 @@ def sample_frames(video_path: Path, out_dir: Path, gps: GpsTrack, cfg,
     flow_scale = float(sc.get("flow_units_per_m", 5.0))
     time_step = float(sc.get("time_s", 0.5))
     every_n = max(1, int(sc.get("every_n", 15)))
+    flow_width = int(sc.get("flow_work_width", 480))
     drop_unusable = bool(cfg.get_path("quality.assess.drop_unusable", True)) \
         and profile is not None and profile.enabled
 
@@ -135,7 +159,7 @@ def sample_frames(video_path: Path, out_dir: Path, gps: GpsTrack, cfg,
             if saved == 0 or (d - last_saved_dist) >= target_dist:
                 keep = True
         elif use_flow:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = _flow_gray(frame, flow_width)
             if prev_gray is not None:
                 accum_flow += _optical_flow_step(prev_gray, gray)
             prev_gray = gray

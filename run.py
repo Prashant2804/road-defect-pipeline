@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 # "do it on fewer frames", not "make the GPU work harder".
 _PRESETS = {
     "fast": {
+        "preprocess.sampling.enabled": False,
         "inference.frame_stride": 3,      # ~28 cm of road between frames at 30 km/h
         "roadseg.stride": 3,
         "surface.stride": 3,
@@ -41,6 +42,7 @@ _PRESETS = {
         "validity.egomotion.work_width": 320,
     },
     "turbo": {
+        "preprocess.sampling.enabled": False,
         # For a first look at long footage. Coverage per metre drops noticeably.
         "inference.frame_stride": 8,
         "roadseg.stride": 8,
