@@ -610,14 +610,14 @@ tmux new -s rfdetr_infer
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5
 
-# Both-lane corridor + lower conf (default --conf 0.15):
+# Both-lane corridor + lower conf (default --conf 0.15); green wash is the assess polygon:
 ./scripts/run_rfdetr_infer.sh \
   --video 'https://drive.google.com/drive/folders/FOLDER_ID' \
   --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5 \
   --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3'
-# Still missing shoulder: --road-top-half-w 0.50 --road-bottom-half-w 0.78 --road-center-x 0.55
+# Still missing shoulder: --road-top-half-w 0.55 --road-bottom-half-w 0.85 --road-center-x 0.55
 # More recall: --conf 0.10   |   less noise: --conf 0.20
 ```
 
@@ -630,11 +630,11 @@ Outputs in `runs/rfdetr_infer/<video_stem>/`:
 | `map_trail.html` | GPS route + class-colored pins (open in a browser) |
 | `summary.json` | Counts and run metadata |
 
-Defaults: wide trapezoid (`bottom_half_w=0.72`, `top_half_w=0.45`), green wash
-inside the assess polygon, `--conf 0.15`. Classical road grow is off (it was
-dropping cracked asphalt). Note: Stage-1 taxonomy has no **rutting** class
-(labels were dropped at train time) — lowering conf helps cracks/potholes, not
-rutting until you retrain.
+Defaults: wide trapezoid (`bottom_half_w=0.78`, `top_half_w=0.50`), green wash
+inside the assess polygon (far corridor tint off), `--conf 0.15`. Classical road
+grow is off (it was dropping cracked asphalt). Note: Stage-1 taxonomy has no
+**rutting** class (labels were dropped at train time) — lowering conf helps
+cracks/potholes, not rutting until you retrain.
 
 Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, `--road-center-x`.
 For metric depth instead of the trapezoid proxy, pass `--camera-height-m` and
@@ -654,7 +654,7 @@ For metric depth instead of the trapezoid proxy, pass `--camera-height-m` and
 ssh -L 8090:localhost:8090 ubuntu@YOUR_VM_IP
 
 ./scripts/upload_infer_results.sh \
-  --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \
+  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3' \
   --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
   --client-secret ~/secrets/drive_oauth_client.json
 ```

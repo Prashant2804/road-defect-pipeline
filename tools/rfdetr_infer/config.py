@@ -28,8 +28,8 @@ class InferConfig:
     z_far_m: float = 5.0
     road_bottom_y: float = 1.0
     road_top_y: float = 0.52  # ~5 m ahead proxy when no camera model
-    road_bottom_half_w: float = 0.72
-    road_top_half_w: float = 0.45
+    road_bottom_half_w: float = 0.78
+    road_top_half_w: float = 0.50
     road_center_x: float = 0.52  # slight right bias (vehicle often left of road center)
     # Classical grow often drops cracked / rutted asphalt — off by default for gating
     use_classical_road: bool = False

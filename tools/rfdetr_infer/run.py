@@ -297,8 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--z-far", type=float, default=5.0, dest="z_far_m")
     p.add_argument("--road-top-y", type=float, default=0.52)
     p.add_argument("--road-bottom-y", type=float, default=1.0)
-    p.add_argument("--road-bottom-half-w", type=float, default=0.72)
-    p.add_argument("--road-top-half-w", type=float, default=0.45)
+    p.add_argument("--road-bottom-half-w", type=float, default=0.78)
+    p.add_argument("--road-top-half-w", type=float, default=0.50)
     p.add_argument("--road-center-x", type=float, default=0.52)
     p.add_argument(
         "--classical-road",
