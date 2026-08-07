@@ -175,6 +175,16 @@ def run_inference(cfg: InferConfig) -> dict:
     cap.release()
     writer.release()
 
+    # OpenCV mp4v is huge / poorly playable — recompress to H.264 when ffmpeg exists
+    try:
+        from .compress_video import compress_mp4
+
+        h264 = compress_mp4(annotated_path, crf=23, preset="medium", replace_src=True)
+        annotated_path = h264
+        print(f"Annotated video compressed in place: {annotated_path}")
+    except Exception as e:
+        print(f"WARNING: H.264 compress skipped ({e}). Install ffmpeg for smaller uploads.")
+
     all_tracks = tracker.flush()
     rows = tracks_to_rows(all_tracks, gps)
     write_defects_csv(out_dir / "defects.csv", rows)
