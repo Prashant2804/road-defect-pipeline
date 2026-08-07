@@ -587,6 +587,27 @@ Or step by step:
 Optional downloads: `EXTRA_DOWNLOAD_ARGS="--bharatpothole --road-crack" ./scripts/run_stage1.sh`.
 Colab path remains `notebooks/colab_rfdetr_train.ipynb` (points here for VM use).
 
+### RF-DETR Stage 2 (RFDETRLarge, multi-source, overnight)
+
+Stage 1 was pothole-heavy on real GoPro video. Stage 2 merges **India + rare-class**
+sources, maps **rutting → ravelling**, caps pothole-only images, and trains
+**RFDETRLarge** for **100 epochs**.
+
+Sources (soft-skip on failure): CRRI, RDD2022 India, BharatPotHole, Crack-2,
+pavement-distress, road-crack, road_damage_2, water-logging, drain-overflow, PWD.
+
+```bash
+# Needs ROBOFLOW_API_KEY + Kaggle creds in .env for BharatPotHole
+tmux new -s rfdetr_stage2
+./scripts/run_stage2.sh
+# detach: Ctrl-b d   |  reattach: tmux attach -t rfdetr_stage2
+
+# OOM: EXTRA_TRAIN_ARGS="--batch 2 --grad-accum 8" ./scripts/run_stage2.sh
+# Data already prepared: SKIP_DOWNLOAD=1 ./scripts/run_stage2.sh
+```
+
+Outputs: `data/rfdetr/stage2/` (merged COCO), `runs/rfdetr_stage2/checkpoint_best_total.pth`.
+
 ### RF-DETR near-field inference (Phase 1)
 
 Standalone dashcam inference: detect only in a **near-field trapezoid** (default

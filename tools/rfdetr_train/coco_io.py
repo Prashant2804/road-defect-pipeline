@@ -492,3 +492,211 @@ def print_class_histogram(dataset_dir: Path, split: str = "train") -> None:
     for n in CLASS_NAMES:
         print(f"  {n:22s} {hist.get(n, 0)}")
     print(f"Images: {len(doc['images'])}")
+
+
+def prepare_rdd_voc(raw_root: Path, out_dir: Path, *, val_frac: float = 0.12) -> Path:
+    """Convert RDD2022-style Pascal VOC (images + XML) into remapped COCO splits."""
+    import xml.etree.ElementTree as ET
+
+    from PIL import Image as _Image
+
+    raw_root = Path(raw_root)
+    # Common layouts: .../train/images + train/annotations, or images/ + xmls/
+    img_dirs: list[Path] = []
+    for cand in (
+        raw_root / "train" / "images",
+        raw_root / "India" / "train" / "images",
+        raw_root / "RDD2022_India" / "train" / "images",
+    ):
+        if cand.is_dir():
+            img_dirs.append(cand)
+    if not img_dirs:
+        img_dirs = [p for p in raw_root.rglob("images") if p.is_dir() and "train" in str(p)]
+    if not img_dirs:
+        raise RuntimeError(f"No train/images under RDD root {raw_root}")
+
+    exts = {".jpg", ".jpeg", ".png"}
+    samples: list[tuple[Path, Path]] = []
+    for img_dir in img_dirs:
+        ann_dir_cands = [
+            img_dir.parent / "annotations",
+            img_dir.parent / "annotations" / "xmls",
+            img_dir.parent / "xmls",
+            img_dir.parent / "labels",
+        ]
+        ann_dir = next((d for d in ann_dir_cands if d.is_dir()), None)
+        if ann_dir is None:
+            # XMLs next to images
+            ann_dir = img_dir
+        for img_path in sorted(img_dir.iterdir()):
+            if img_path.suffix.lower() not in exts:
+                continue
+            xml_path = ann_dir / f"{img_path.stem}.xml"
+            if not xml_path.exists():
+                # sometimes nested
+                hits = list(ann_dir.rglob(f"{img_path.stem}.xml"))
+                if not hits:
+                    continue
+                xml_path = hits[0]
+            samples.append((img_path, xml_path))
+
+    if not samples:
+        raise RuntimeError(f"No image/XML pairs under {raw_root}")
+
+    random.seed(2022)
+    samples = list(samples)
+    random.shuffle(samples)
+    n_val = max(1, int(val_frac * len(samples)))
+    splits = {"valid": samples[:n_val], "train": samples[n_val:]}
+
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+
+    for split, subset in splits.items():
+        sdir = out_dir / split
+        sdir.mkdir(parents=True)
+        images, anns = [], []
+        ann_id, img_id = 1, 1
+        for img_path, xml_path in subset:
+            try:
+                with _Image.open(img_path) as im:
+                    w, h = im.size
+            except Exception:
+                continue
+            try:
+                root = ET.parse(xml_path).getroot()
+            except ET.ParseError:
+                continue
+            kept = 0
+            for obj in root.findall("object"):
+                name = (obj.findtext("name") or "").strip()
+                resolved = resolve_class(name)
+                if resolved is None:
+                    continue
+                bb = obj.find("bndbox")
+                if bb is None:
+                    continue
+                xmin = float(bb.findtext("xmin") or 0)
+                ymin = float(bb.findtext("ymin") or 0)
+                xmax = float(bb.findtext("xmax") or 0)
+                ymax = float(bb.findtext("ymax") or 0)
+                bw, bh = max(0.0, xmax - xmin), max(0.0, ymax - ymin)
+                if bw < 1 or bh < 1:
+                    continue
+                anns.append({
+                    "id": ann_id,
+                    "image_id": img_id,
+                    "category_id": CLASS_TO_ID[resolved] + 1,
+                    "bbox": [xmin, ymin, bw, bh],
+                    "area": float(bw * bh),
+                    "iscrowd": 0,
+                })
+                ann_id += 1
+                kept += 1
+            # Keep images even with 0 kept anns? Skip empty — reduces noise from unlabeled frames
+            if kept == 0:
+                continue
+            shutil.copy2(img_path, sdir / img_path.name)
+            images.append(
+                {"id": img_id, "file_name": img_path.name, "width": w, "height": h}
+            )
+            img_id += 1
+        doc = {
+            "info": {"description": f"RDD VOC remapped {split}"},
+            "licenses": [],
+            "categories": coco_categories(CLASS_NAMES),
+            "images": images,
+            "annotations": anns,
+        }
+        (sdir / "_annotations.coco.json").write_text(json.dumps(doc), encoding="utf-8")
+        print(f"  RDD VOC {split}: {len(images)} images, {len(anns)} anns")
+
+    if not (out_dir / "train" / "_annotations.coco.json").exists():
+        raise RuntimeError("RDD VOC conversion produced no train split")
+    return out_dir
+
+
+def cap_majority_class_images(
+    dataset_dir: Path,
+    *,
+    majority: str = "pothole",
+    max_fraction: float = 0.45,
+    split: str = "train",
+    seed: int = 42,
+) -> None:
+    """Drop excess images that only contain the majority class (in-place).
+
+    Keeps every image that has at least one non-majority annotation. Among
+    majority-only images, keeps enough so majority instances stay under
+    ``max_fraction`` of all instances (best-effort).
+    """
+    ann_path = dataset_dir / split / "_annotations.coco.json"
+    if not ann_path.exists():
+        return
+    doc = json.loads(ann_path.read_text(encoding="utf-8"))
+    maj_id = CLASS_TO_ID[majority] + 1
+    by_img: dict[int, list[dict]] = {}
+    for a in doc["annotations"]:
+        by_img.setdefault(a["image_id"], []).append(a)
+
+    keep_ids: set[int] = set()
+    maj_only: list[int] = []
+    for im in doc["images"]:
+        iid = im["id"]
+        anns = by_img.get(iid, [])
+        if not anns:
+            continue
+        if any(a["category_id"] != maj_id for a in anns):
+            keep_ids.add(iid)
+        else:
+            maj_only.append(iid)
+
+    # Count non-majority instances already kept
+    non_maj = sum(
+        1
+        for iid in keep_ids
+        for a in by_img.get(iid, [])
+        if a["category_id"] != maj_id
+    )
+    maj_kept = sum(
+        1
+        for iid in keep_ids
+        for a in by_img.get(iid, [])
+        if a["category_id"] == maj_id
+    )
+    # Target: maj / (maj + non_maj) <= max_fraction  =>  maj <= max_fraction/(1-max_fraction) * non_maj
+    if max_fraction >= 0.99 or non_maj == 0:
+        print(f"  cap skipped (non_maj={non_maj}, max_fraction={max_fraction})")
+        return
+    max_maj = int((max_fraction / (1.0 - max_fraction)) * non_maj)
+    budget = max(0, max_maj - maj_kept)
+
+    random.seed(seed)
+    random.shuffle(maj_only)
+    # Prefer images with more majority boxes when filling budget
+    maj_only.sort(key=lambda iid: len(by_img.get(iid, [])), reverse=True)
+    for iid in maj_only:
+        n = len(by_img.get(iid, []))
+        if budget <= 0:
+            break
+        if n <= budget:
+            keep_ids.add(iid)
+            budget -= n
+
+    before_imgs, before_anns = len(doc["images"]), len(doc["annotations"])
+    new_images = [im for im in doc["images"] if im["id"] in keep_ids]
+    new_anns = [a for a in doc["annotations"] if a["image_id"] in keep_ids]
+    # Drop orphaned image files for majority-only discards (optional; save disk)
+    keep_names = {im["file_name"] for im in new_images}
+    sdir = dataset_dir / split
+    for p in sdir.iterdir():
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"} and p.name not in keep_names:
+            p.unlink(missing_ok=True)
+
+    doc["images"] = new_images
+    doc["annotations"] = new_anns
+    ann_path.write_text(json.dumps(doc), encoding="utf-8")
+    print(
+        f"  capped {majority}-only images on {split}: "
+        f"{before_imgs}→{len(new_images)} imgs, {before_anns}→{len(new_anns)} anns"
+    )
