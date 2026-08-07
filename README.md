@@ -587,6 +587,38 @@ Or step by step:
 Optional downloads: `EXTRA_DOWNLOAD_ARGS="--bharatpothole --road-crack" ./scripts/run_stage1.sh`.
 Colab path remains `notebooks/colab_rfdetr_train.ipynb` (points here for VM use).
 
+### RF-DETR near-field inference (Phase 1)
+
+Standalone dashcam inference: detect only in a **near-field trapezoid** (default
+assess ≤ ~5 m ahead), tint the far field green, draw boxes, attach **timeline +
+GPS from an SRT sidecar**, and write a Leaflet **map trail**.
+
+```bash
+# After Stage 1 weights exist — prefer tmux for long videos:
+tmux new -s rfdetr_infer
+./scripts/run_rfdetr_infer.sh \
+  --video /path/to/dashcam.mp4 \
+  --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
+  --z-far 5
+# optional: --srt /path/to/dashcam.srt  (else uses <video>.srt next to the file)
+```
+
+Outputs in `runs/rfdetr_infer/<video_stem>/`:
+
+| File | Contents |
+|------|----------|
+| `annotated.mp4` | Far-field tint + near outline + boxes + HUD |
+| `defects.csv` / `.json` | Unique defects with `t_start/end`, lat/lon, chainage |
+| `map_trail.html` | GPS route + class-colored pins (open in a browser) |
+| `summary.json` | Counts and run metadata |
+
+Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, etc. For metric
+depth instead of the trapezoid proxy, pass `--camera-height-m` and `--vfov-deg`.
+
+**Phase 2 (not in this pass):** `inference.backend: rfdetr` in the full `rdd`
+pipeline (`detect_track` + IRC report), and optional 3-panel dashboard (telemetry
+sidebar + overlay + north-up map) matching the inspiration UI.
+
 ---
 
 ## Config cheatsheet
