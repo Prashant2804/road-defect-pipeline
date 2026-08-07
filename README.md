@@ -601,6 +601,13 @@ tmux new -s rfdetr_infer
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5
 # optional: --srt /path/to/dashcam.srt  (else uses <video>.srt next to the file)
+
+# Or download from GCS / HTTPS (needs gcloud/gsutil for gs://):
+./scripts/run_rfdetr_infer.sh \
+  --video gs://YOUR_BUCKET/path/clip.mp4 \
+  --srt   gs://YOUR_BUCKET/path/clip.srt \
+  --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
+  --z-far 5
 ```
 
 Outputs in `runs/rfdetr_infer/<video_stem>/`:

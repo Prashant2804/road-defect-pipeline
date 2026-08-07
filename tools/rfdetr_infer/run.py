@@ -222,9 +222,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="RF-DETR near-field dashcam inference (boxes + SRT map trail)."
     )
-    p.add_argument("--video", type=Path, required=True)
+    p.add_argument(
+        "--video",
+        type=str,
+        required=True,
+        help="Local path, gs:// URI, or https:// URL to the dashcam video",
+    )
     p.add_argument("--weights", type=Path, required=True)
-    p.add_argument("--srt", type=Path, default=None)
+    p.add_argument(
+        "--srt",
+        type=str,
+        default=None,
+        help="Local path, gs:// URI, or https:// URL to the SRT (optional)",
+    )
+    p.add_argument(
+        "--media-dir",
+        type=Path,
+        default=None,
+        help="Where to cache downloaded media (default: data/rfdetr/infer_media)",
+    )
     p.add_argument(
         "--out-dir",
         type=Path,
@@ -249,14 +265,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .media_fetch import fetch_media
+
     args = build_parser().parse_args(argv)
+    media_dir = args.media_dir or (repo_root() / "data" / "rfdetr" / "infer_media")
+
+    print("==> Resolving video")
+    video = fetch_media(args.video, media_dir, default_name="input.mp4")
+    srt_path = None
+    if args.srt:
+        print("==> Resolving SRT")
+        srt_path = fetch_media(args.srt, media_dir, default_name=f"{video.stem}.srt")
+
     out = args.out_dir
     if out is None:
-        out = repo_root() / "runs" / "rfdetr_infer" / args.video.stem
+        out = repo_root() / "runs" / "rfdetr_infer" / video.stem
     cfg = InferConfig(
-        video=args.video,
+        video=video,
         weights=args.weights,
-        srt=args.srt,
+        srt=srt_path,
         out_dir=out,
         conf=args.conf,
         frame_stride=args.frame_stride,

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # RF-DETR near-field dashcam inference (Phase 1).
 #
-# Prerequisites: Stage-1 weights + video (+ optional .srt sidecar).
+# Prerequisites: Stage-1 weights + video (+ optional .srt).
+# --video / --srt accept local paths, gs:// URIs, or https:// URLs.
 # Long videos: run inside tmux so SSH disconnects do not kill the job.
 #
 #   tmux new -s rfdetr_infer
 #   ./scripts/run_rfdetr_infer.sh \
-#     --video /path/to/dashcam.mp4 \
+#     --video gs://YOUR_BUCKET/clip.mp4 \
+#     --srt   gs://YOUR_BUCKET/clip.srt \
 #     --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
 #     --z-far 5
 #
@@ -31,11 +33,20 @@ fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 --video PATH --weights PATH [--srt PATH] [--z-far 5] ..." >&2
-  echo "Example:" >&2
-  echo "  $0 --video clip.mp4 --weights runs/rfdetr_stage1/checkpoint_best_total.pth" >&2
+  echo "Usage: $0 --video PATH_OR_URL --weights PATH [--srt PATH_OR_URL] [--z-far 5] ..." >&2
+  echo "Example (GCS):" >&2
+  echo "  $0 --video gs://bucket/clip.mp4 --srt gs://bucket/clip.srt \\" >&2
+  echo "     --weights runs/rfdetr_stage1/checkpoint_best_total.pth" >&2
   exit 1
 fi
 
 echo "==> Using: $PY ($("$PY" --version 2>&1))"
+if command -v gcloud >/dev/null 2>&1; then
+  echo "==> gcloud: $(gcloud --version 2>/dev/null | head -1 || true)"
+elif command -v gsutil >/dev/null 2>&1; then
+  echo "==> gsutil available"
+else
+  echo "==> NOTE: no gcloud/gsutil — gs:// downloads will fail (https:// still OK)"
+fi
+
 exec "$PY" -m tools.rfdetr_infer.run "$@"
