@@ -20,6 +20,7 @@ from .map_trail import write_map_trail
 from .near_field import build_near_field
 from .render import draw_boxes, draw_hud, draw_near_field
 from .track_simple import SimpleTracker
+from .video_writer import FfmpegH264Writer
 
 
 def _predictions_to_arrays(detections):
@@ -78,8 +79,9 @@ def run_inference(cfg: InferConfig) -> dict:
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     annotated_path = out_dir / "annotated.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(annotated_path), fourcc, fps, (w, h))
+    writer = FfmpegH264Writer(
+        annotated_path, w, h, fps, crf=getattr(cfg, "video_crf", 18), preset="medium"
+    )
 
     tracker = SimpleTracker(iou_match=cfg.iou_match, max_age=cfg.max_age)
     unique_counts: Counter[str] = Counter()
@@ -173,17 +175,7 @@ def run_inference(cfg: InferConfig) -> dict:
         frame_i += 1
 
     cap.release()
-    writer.release()
-
-    # OpenCV mp4v is huge / poorly playable — recompress to H.264 when ffmpeg exists
-    try:
-        from .compress_video import compress_mp4
-
-        h264 = compress_mp4(annotated_path, crf=23, preset="medium", replace_src=True)
-        annotated_path = h264
-        print(f"Annotated video compressed in place: {annotated_path}")
-    except Exception as e:
-        print(f"WARNING: H.264 compress skipped ({e}). Install ffmpeg for smaller uploads.")
+    writer.close()
 
     all_tracks = tracker.flush()
     rows = tracks_to_rows(all_tracks, gps)
@@ -260,6 +252,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--stride", type=int, default=3, dest="frame_stride")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument(
+        "--video-crf",
+        type=int,
+        default=18,
+        help="H.264 CRF for annotated.mp4 (18=high quality, 23=smaller)",
+    )
     p.add_argument("--z-near", type=float, default=0.5, dest="z_near_m")
     p.add_argument("--z-far", type=float, default=5.0, dest="z_far_m")
     p.add_argument("--road-top-y", type=float, default=0.55)
@@ -293,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         conf=args.conf,
         frame_stride=args.frame_stride,
         max_frames=args.max_frames,
+        video_crf=args.video_crf,
         z_near_m=args.z_near_m,
         z_far_m=args.z_far_m,
         road_top_y=args.road_top_y,

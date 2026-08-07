@@ -11,11 +11,11 @@ def compress_mp4(
     src: Path,
     dst: Path | None = None,
     *,
-    crf: int = 23,
+    crf: int = 18,
     preset: str = "medium",
     replace_src: bool = False,
 ) -> Path:
-    """Re-encode with libx264. Default CRF 23 is a good size/quality tradeoff."""
+    """Re-encode with libx264. Default CRF 18 matches the main pipeline quality."""
     src = Path(src)
     if not src.is_file():
         raise FileNotFoundError(src)
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Compress annotated.mp4 to H.264 for upload/preview.")
     p.add_argument("--input", type=Path, required=True)
     p.add_argument("--output", type=Path, default=None)
-    p.add_argument("--crf", type=int, default=23, help="Lower=better quality/larger (18–28 typical)")
+    p.add_argument("--crf", type=int, default=18, help="Lower=better quality/larger (18–23 typical)")
     p.add_argument("--preset", type=str, default="medium")
     p.add_argument(
         "--replace",
