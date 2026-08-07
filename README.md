@@ -176,6 +176,9 @@ lets you set camera geometry, previews the road mask before committing, then pro
 the annotated video, `defects.csv`, `segments.csv` and `report.html` — all downloadable
 or written back to Drive.
 
+For **RF-DETR Medium** training on Colab, see `notebooks/colab_rfdetr_train.ipynb`.
+On a dedicated GPU VM, prefer the headless scripts in **RF-DETR Stage 1 (headless VM)** below.
+
 Open it from GitHub with *Open in Colab*, or upload the `.ipynb` directly.
 
 > The repo is private, so the notebook clones with a GitHub token from Colab Secrets
@@ -555,6 +558,34 @@ inflates metrics. `split.mode: random` is rejected by config validation.
 
 Warm-start from a road-damage checkpoint via `model.warm_start_weights` (RDD2022
 India subset, or a Roboflow road-defect model), then fine-tune.
+
+### RF-DETR Stage 1 (headless VM)
+
+For **RFDETRMedium** Stage-1 training over SSH (e.g. RTX 5090 32GB), use the
+scripts under `scripts/` — no Colab/Drive required. Defaults: CRRI-only COCO,
+`batch_size=16`, `grad_accum=1`, `epochs=50`, early stopping, checkpoints in
+`runs/rfdetr_stage1`.
+
+```bash
+cp .env.example .env          # paste ROBOFLOW_API_KEY
+./scripts/setup_rfdetr_vm.sh  # creates .venv + installs rfdetr[train], etc.
+
+# Keep the job alive across SSH disconnects:
+tmux new -s rfdetr
+./scripts/run_stage1.sh
+# detach: Ctrl-b d   |  reattach: tmux attach -t rfdetr
+```
+
+Or step by step:
+
+```bash
+.venv/bin/python -m tools.rfdetr_train.download
+.venv/bin/python -m tools.rfdetr_train.train --batch 24 --epochs 50
+# resume:  ... train --resume runs/rfdetr_stage1/checkpoint.pth
+```
+
+Optional downloads: `EXTRA_DOWNLOAD_ARGS="--bharatpothole --road-crack" ./scripts/run_stage1.sh`.
+Colab path remains `notebooks/colab_rfdetr_train.ipynb` (points here for VM use).
 
 ---
 

@@ -14,9 +14,11 @@ data/labels/*
 # Roboflow export in one command, and a few hundred images is not review material.
 data/mp_road/
 data/*_clean/
+data/rfdetr/
 !data/**/.gitkeep
 out/
 weights/*.pt
+*.pth
 *.insv
 *.insp
 *.mp4
