@@ -608,6 +608,15 @@ tmux new -s rfdetr_infer
   --srt   gs://YOUR_BUCKET/path/clip.srt \
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5
+
+# Re-run with polished overlays (wider corridor, larger boxes, CRF 18):
+./scripts/run_rfdetr_infer.sh \
+  --video 'https://drive.google.com/drive/folders/FOLDER_ID' \
+  --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
+  --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
+  --z-far 5 \
+  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v2'
+# If corridor still narrow: --road-top-half-w 0.35 --road-bottom-half-w 0.60
 ```
 
 Outputs in `runs/rfdetr_infer/<video_stem>/`:

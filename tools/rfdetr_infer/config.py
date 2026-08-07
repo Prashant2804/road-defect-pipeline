@@ -18,19 +18,18 @@ class InferConfig:
         default_factory=lambda: repo_root() / "runs" / "rfdetr_infer" / "latest"
     )
 
-    # Detector / video encode
+    # Detector
     conf: float = 0.25
     frame_stride: int = 3
     max_frames: int = 0  # 0 = whole video
-    video_crf: int = 18  # H.264 quality (lower = better/larger; 18 matches main pipeline)
 
     # Near-field trapezoid (normalized image coords, Colab-style)
     z_near_m: float = 0.5
     z_far_m: float = 5.0
     road_bottom_y: float = 1.0
     road_top_y: float = 0.55  # ~5 m ahead proxy when no camera model
-    road_bottom_half_w: float = 0.48
-    road_top_half_w: float = 0.12
+    road_bottom_half_w: float = 0.55
+    road_top_half_w: float = 0.28
     road_center_x: float = 0.5
     use_classical_road: bool = True
     min_overlap: float = 0.25
@@ -43,3 +42,6 @@ class InferConfig:
     # Tracker
     iou_match: float = 0.3
     max_age: int = 15  # strided frames without match before closing track
+
+    # Encode quality (H.264 CRF; lower = sharper / larger)
+    crf: int = 18

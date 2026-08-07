@@ -128,7 +128,8 @@ def build_near_field(frame_bgr: np.ndarray, cfg: InferConfig) -> NearField:
         cfg.road_top_half_w,
         cfg.road_center_x,
     )
-    # Extended trapezoid toward the horizon for far-field tint (inspiration green wash)
+    # Extended trapezoid toward the horizon for far-field tint (inspiration green wash).
+    # Same half-widths as near so the corridor reads as one continuous road ribbon.
     far_top = min(cfg.road_top_y, max(0.05, cfg.road_top_y - 0.25))
     far_prior, _ = road_trapezoid(
         h,
@@ -136,7 +137,7 @@ def build_near_field(frame_bgr: np.ndarray, cfg: InferConfig) -> NearField:
         cfg.road_bottom_y,
         far_top,
         cfg.road_bottom_half_w,
-        max(0.04, cfg.road_top_half_w * 0.6),
+        cfg.road_top_half_w,
         cfg.road_center_x,
     )
 
