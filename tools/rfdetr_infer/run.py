@@ -20,7 +20,6 @@ from .map_trail import write_map_trail
 from .near_field import build_near_field
 from .render import draw_boxes, draw_hud, draw_near_field
 from .track_simple import SimpleTracker
-from .video_writer import FfmpegH264Writer
 
 
 def _predictions_to_arrays(detections):
@@ -79,10 +78,13 @@ def run_inference(cfg: InferConfig) -> dict:
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     annotated_path = out_dir / "annotated.mp4"
-    # Direct H.264 (CRF 23 default) — OpenCV mp4v is huge / Drive-unfriendly
-    writer = FfmpegH264Writer(
-        annotated_path, w, h, fps, crf=cfg.crf, preset="medium"
-    )
+    # Proven full-length path: OpenCV mp4v during infer, then H.264 CRF compress.
+    # (Direct ffmpeg pipe previously truncated long GoPro runs to ~seconds.)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(annotated_path), fourcc, fps, (w, h))
+    if not writer.isOpened():
+        raise SystemExit(f"Could not open VideoWriter for {annotated_path}")
+    print(f"Writing annotated video (OpenCV mp4v → H.264 crf={cfg.crf}) → {annotated_path}")
 
     tracker = SimpleTracker(iou_match=cfg.iou_match, max_age=cfg.max_age)
     unique_counts: Counter[str] = Counter()
@@ -181,26 +183,22 @@ def run_inference(cfg: InferConfig) -> dict:
         frame_i += 1
 
     cap.release()
-    writer.close()
+    writer.release()
 
-    # Only recompress if we fell back to OpenCV mp4v
-    if getattr(writer, "backend", "") == "opencv_mp4v":
-        try:
-            from .compress_video import compress_mp4
+    # OpenCV mp4v is huge / poorly playable — always recompress to H.264 for Drive
+    try:
+        from .compress_video import compress_mp4
 
-            h264 = compress_mp4(
-                annotated_path, crf=cfg.crf, preset="medium", replace_src=True
-            )
-            annotated_path = h264
-            print(f"Annotated video compressed in place: {annotated_path}")
-        except Exception as e:
-            print(
-                f"WARNING: H.264 compress skipped ({e}). "
-                "Install ffmpeg for smaller uploads."
-            )
-    else:
-        mb = annotated_path.stat().st_size / (1024 * 1024) if annotated_path.is_file() else 0
-        print(f"Annotated H.264 video: {annotated_path} ({mb:.1f} MB)")
+        h264 = compress_mp4(
+            annotated_path, crf=cfg.crf, preset="medium", replace_src=True
+        )
+        annotated_path = h264
+        print(f"Annotated video compressed in place: {annotated_path}")
+    except Exception as e:
+        print(
+            f"WARNING: H.264 compress skipped ({e}). "
+            "Install ffmpeg for Drive-friendly uploads."
+        )
 
     all_tracks = tracker.flush()
     rows = tracks_to_rows(all_tracks, gps)
@@ -214,6 +212,22 @@ def run_inference(cfg: InferConfig) -> dict:
     )
 
     elapsed = time.time() - t0
+    expected_s = frame_i / max(fps, 1e-6)
+    out_s = None
+    try:
+        out_cap = cv2.VideoCapture(str(annotated_path))
+        out_n = int(out_cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        out_fps = float(out_cap.get(cv2.CAP_PROP_FPS) or fps)
+        out_cap.release()
+        out_s = out_n / max(out_fps, 1e-6)
+        if expected_s > 30 and out_s < expected_s * 0.5:
+            print(
+                f"WARNING: annotated video looks truncated "
+                f"({out_s:.1f}s vs expected ~{expected_s:.1f}s). Re-run inference."
+            )
+    except Exception:
+        pass
+
     summary = {
         "video": str(cfg.video),
         "weights": str(cfg.weights),
@@ -230,6 +244,8 @@ def run_inference(cfg: InferConfig) -> dict:
         "z_near_m": cfg.z_near_m,
         "z_far_m": cfg.z_far_m,
         "annotated_video": str(annotated_path),
+        "expected_duration_s": round(expected_s, 1),
+        "annotated_duration_s": None if out_s is None else round(out_s, 1),
         "elapsed_s": round(elapsed, 1),
         "phase2_note": (
             "Phase 2 (later): set inference.backend=rfdetr in config.yaml and "

@@ -6,6 +6,12 @@ import subprocess
 from pathlib import Path
 
 
+def _even(n: int) -> int:
+    """yuv420p requires even dimensions."""
+    n = int(n)
+    return n if n % 2 == 0 else n - 1
+
+
 class FfmpegH264Writer:
     """Pipe BGR frames to ffmpeg libx264. Falls back to OpenCV mp4v if needed."""
 
@@ -20,8 +26,10 @@ class FfmpegH264Writer:
         preset: str = "medium",
     ):
         self.path = Path(path)
-        self.width = int(width)
-        self.height = int(height)
+        self.width = _even(width)
+        self.height = _even(height)
+        if self.width < 2 or self.height < 2:
+            raise ValueError(f"Invalid video size {width}x{height}")
         self.fps = float(fps) if fps and fps > 0 else 30.0
         self.crf = int(crf)
         self.preset = preset
@@ -35,6 +43,8 @@ class FfmpegH264Writer:
             self._open_cv()
             return
 
+        # -framerate before -i sets input rate; do NOT use stderr=PIPE (deadlocks
+        # after enough log bytes and truncates long encodes).
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -45,12 +55,12 @@ class FfmpegH264Writer:
             "rawvideo",
             "-vcodec",
             "rawvideo",
-            "-s",
-            f"{self.width}x{self.height}",
             "-pix_fmt",
             "bgr24",
-            "-r",
-            f"{self.fps}",
+            "-s",
+            f"{self.width}x{self.height}",
+            "-framerate",
+            f"{self.fps:.6f}",
             "-i",
             "-",
             "-an",
@@ -71,10 +81,13 @@ class FfmpegH264Writer:
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=10**7,
             )
             print(
-                f"Writing H.264 annotated video (crf={self.crf}, preset={self.preset}) → {self.path}"
+                f"Writing H.264 annotated video "
+                f"({self.width}x{self.height} @ {self.fps:.2f}fps, "
+                f"crf={self.crf}, preset={self.preset}) → {self.path}"
             )
         except OSError as e:
             print(f"WARNING: ffmpeg writer failed ({e}); falling back to OpenCV mp4v")
@@ -110,15 +123,16 @@ class FfmpegH264Writer:
         else:
             buf = frame if frame.flags["C_CONTIGUOUS"] else np.ascontiguousarray(frame)
             assert self._proc is not None and self._proc.stdin is not None
+            if self._proc.poll() is not None:
+                raise RuntimeError(
+                    f"ffmpeg exited early (code={self._proc.returncode}) after "
+                    f"{self.frames_written} frames — annotated video would be truncated"
+                )
             try:
                 self._proc.stdin.write(buf.tobytes())
             except (BrokenPipeError, OSError) as e:
-                err = b""
-                if self._proc.stderr is not None:
-                    err = self._proc.stderr.read() or b""
                 raise RuntimeError(
-                    f"ffmpeg died after {self.frames_written} frames: {e}\n"
-                    f"{err.decode(errors='replace')[-1000:]}"
+                    f"ffmpeg died after {self.frames_written} frames: {e}"
                 ) from e
         self.frames_written += 1
 
@@ -138,10 +152,11 @@ class FfmpegH264Writer:
             pass
         rc = self._proc.wait()
         if rc != 0:
-            err = (self._proc.stderr.read() if self._proc.stderr else b"") or b""
             raise RuntimeError(
-                f"ffmpeg exit {rc}: {err.decode(errors='replace')[-1000:]}"
+                f"ffmpeg exit {rc} after {self.frames_written} frames "
+                f"(expected a full-length annotated.mp4)"
             )
+        print(f"ffmpeg closed OK — wrote {self.frames_written} frames → {self.path}")
 
     def __enter__(self):
         return self
