@@ -84,13 +84,34 @@ def _ensure_gdown() -> str:
 
 
 def _run_gdown(args: list[str]) -> None:
-    exe = _ensure_gdown()
-    if exe == sys.executable:
-        cmd = [exe, "-m", "gdown", *args]
-    else:
-        cmd = [exe, *args]
-    print("  $", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    """Run gdown (module first). Retry without optional flags on older CLIs."""
+    launchers = [
+        [sys.executable, "-m", "gdown"],
+    ]
+    gdown_bin = shutil.which("gdown")
+    if gdown_bin:
+        launchers.append([gdown_bin])
+
+    optional = {"--remaining-ok", "--fuzzy"}
+    arg_variants = [args]
+    cleaned = [a for a in args if a not in optional]
+    if cleaned != args:
+        arg_variants.append(cleaned)
+
+    last_err: Exception | None = None
+    for launcher in launchers:
+        for variant in arg_variants:
+            cmd = [*launcher, *variant]
+            print("  $", " ".join(cmd))
+            try:
+                subprocess.run(cmd, check=True)
+                return
+            except subprocess.CalledProcessError as e:
+                last_err = e
+                # exit 2 is often argparse / bad flag — try next variant
+                continue
+    assert last_err is not None
+    raise last_err
 
 
 def find_video_in_dir(root: Path) -> Path | None:
@@ -136,7 +157,8 @@ def download_drive_folder(url: str, dest_dir: Path) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     print(f"  Downloading Google Drive folder {fid} → {out}")
     print("  (folder must be shared as 'Anyone with the link' or accessible to this VM)")
-    _run_gdown(["--folder", url, "-O", str(out), "--remaining-ok"])
+    # Do not pass --remaining-ok: many installed gdown versions reject it.
+    _run_gdown(["--folder", url, "-O", str(out)])
     if find_video_in_dir(out) is None:
         raise RuntimeError(
             f"Drive folder downloaded but no video (*{', *'.join(sorted(_VIDEO_EXTS))}) "
