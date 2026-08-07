@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Upload RF-DETR inference outputs to a Google Drive folder.
 #
-# One-time auth on the VM (browser / device login):
+# One-time auth on the VM (browser / device login) — needs FULL drive scope
+# (drive.file alone cannot open an existing destination folder → 404):
 #   gcloud auth application-default login \
-#     --scopes=https://www.googleapis.com/auth/drive.file,https://www.googleapis.com/auth/cloud-platform
+#     --scopes=https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/cloud-platform
 #
-# Then share the destination Drive folder with that same Google account (Editor).
+# Share the destination Drive folder with that same Google account (Editor).
 #
 # Usage:
 #   ./scripts/upload_infer_results.sh \

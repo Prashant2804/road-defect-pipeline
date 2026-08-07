@@ -67,21 +67,29 @@ def _drive_service():
             f"Import error: {e}"
         ) from e
 
-    scopes = ["https://www.googleapis.com/auth/drive.file"]
+    # drive.file cannot see arbitrary existing folders (404). Need full drive scope.
+    scopes = ["https://www.googleapis.com/auth/drive"]
     creds, _ = google_auth_default(scopes=scopes)
-    if not creds.valid:
+    if not getattr(creds, "valid", False):
         if getattr(creds, "refresh_token", None):
             creds.refresh(Request())
         else:
-            raise SystemExit(
-                "Google credentials are not valid for Drive.\n"
-                "On the VM run (once):\n"
-                "  gcloud auth application-default login "
-                "--scopes=https://www.googleapis.com/auth/drive.file,"
-                "https://www.googleapis.com/auth/cloud-platform\n"
-                "Then re-run this upload script."
-            )
+            raise SystemExit(_auth_help())
+    # If ADC was created with only drive.file, API calls to existing folders 404.
+    # Detect via a lightweight about() after build is awkward; document re-login.
     return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def _auth_help() -> str:
+    return (
+        "Google credentials missing/invalid for Drive, or logged in with too-narrow scope.\n"
+        "Re-auth on the VM (browser flow), using FULL drive scope:\n\n"
+        "  gcloud auth application-default login \\\n"
+        "    --scopes=https://www.googleapis.com/auth/drive,"
+        "https://www.googleapis.com/auth/cloud-platform\n\n"
+        "Then share the destination folder with THAT Google account as Editor\n"
+        "(or use an account that already owns the folder)."
+    )
 
 
 def _find_existing(service, folder_id: str, name: str) -> str | None:
@@ -151,10 +159,7 @@ def upload_run(
         print(f"Folder: {meta.get('name')} ({meta.get('mimeType')})")
     except Exception as e:
         raise SystemExit(
-            f"Cannot access Drive folder {folder_id}: {e}\n"
-            "Share the folder with the Google account used on this VM "
-            "(Editor), or use that account in:\n"
-            "  gcloud auth application-default login --scopes=..."
+            f"Cannot access Drive folder {folder_id}: {e}\n\n{_auth_help()}"
         ) from e
 
     for path in files:
