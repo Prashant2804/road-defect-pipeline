@@ -53,7 +53,8 @@ source "$VENV/bin/activate"
   "Pillow>=9.0" \
   "PyYAML>=6.0" \
   "python-dotenv>=1.0" \
-  "tqdm"
+  "tqdm" \
+  "gdown>=5.0"
 
 echo ""
 echo "==> Verifying imports"

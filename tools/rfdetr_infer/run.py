@@ -265,17 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .media_fetch import fetch_media
+    from .media_fetch import resolve_video_and_srt
 
     args = build_parser().parse_args(argv)
     media_dir = args.media_dir or (repo_root() / "data" / "rfdetr" / "infer_media")
 
-    print("==> Resolving video")
-    video = fetch_media(args.video, media_dir, default_name="input.mp4")
-    srt_path = None
-    if args.srt:
-        print("==> Resolving SRT")
-        srt_path = fetch_media(args.srt, media_dir, default_name=f"{video.stem}.srt")
+    video, srt_path = resolve_video_and_srt(args.video, args.srt, media_dir)
 
     out = args.out_dir
     if out is None:
