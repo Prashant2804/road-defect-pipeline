@@ -590,8 +590,9 @@ Colab path remains `notebooks/colab_rfdetr_train.ipynb` (points here for VM use)
 ### RF-DETR near-field inference (Phase 1)
 
 Standalone dashcam inference: detect only in a **near-field trapezoid** (default
-assess ≤ ~5 m ahead), tint the far field green, draw boxes, attach **timeline +
-GPS from an SRT sidecar**, and write a Leaflet **map trail**.
+assess ≤ ~5 m ahead, both lanes), fill that polygon with a light green wash,
+draw boxes, attach **timeline + GPS from an SRT sidecar**, and write a Leaflet
+**map trail**.
 
 ```bash
 # After Stage 1 weights exist — prefer tmux for long videos:
@@ -609,27 +610,35 @@ tmux new -s rfdetr_infer
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5
 
-# Re-run with polished overlays (wider corridor, larger boxes, CRF 18):
+# Both-lane corridor + lower conf (default --conf 0.15):
 ./scripts/run_rfdetr_infer.sh \
   --video 'https://drive.google.com/drive/folders/FOLDER_ID' \
   --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5 \
-  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v2'
-# If corridor still narrow: --road-top-half-w 0.35 --road-bottom-half-w 0.60
+  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3'
+# Still missing shoulder: --road-top-half-w 0.50 --road-bottom-half-w 0.78 --road-center-x 0.55
+# More recall: --conf 0.10   |   less noise: --conf 0.20
 ```
 
 Outputs in `runs/rfdetr_infer/<video_stem>/`:
 
 | File | Contents |
 |------|----------|
-| `annotated.mp4` | Far-field tint + near outline + boxes + HUD |
+| `annotated.mp4` | Near-field green wash + outline + boxes + HUD |
 | `defects.csv` / `.json` | Unique defects with `t_start/end`, lat/lon, chainage |
 | `map_trail.html` | GPS route + class-colored pins (open in a browser) |
 | `summary.json` | Counts and run metadata |
 
-Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, etc. For metric
-depth instead of the trapezoid proxy, pass `--camera-height-m` and `--vfov-deg`.
+Defaults: wide trapezoid (`bottom_half_w=0.72`, `top_half_w=0.45`), green wash
+inside the assess polygon, `--conf 0.15`. Classical road grow is off (it was
+dropping cracked asphalt). Note: Stage-1 taxonomy has no **rutting** class
+(labels were dropped at train time) — lowering conf helps cracks/potholes, not
+rutting until you retrain.
+
+Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, `--road-center-x`.
+For metric depth instead of the trapezoid proxy, pass `--camera-height-m` and
+`--vfov-deg`.
 
 **Upload results to Google Drive** (use your own Desktop OAuth client — not
 `gcloud auth application-default`, which Google blocks for Drive):

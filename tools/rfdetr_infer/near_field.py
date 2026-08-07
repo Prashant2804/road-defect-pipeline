@@ -157,13 +157,14 @@ def build_near_field(frame_bgr: np.ndarray, cfg: InferConfig) -> NearField:
     in_band = np.nan_to_num(in_band, nan=False).astype(bool)
     beyond = np.nan_to_num(beyond, nan=False).astype(bool)
 
-    # Assessable = near trapezoid ∩ road ∩ distance band
-    mask = road & prior & in_band
-    # Far tint = extended road corridor beyond the assess band (and not assessable)
-    far_tint = road & far_prior & beyond & ~mask
-    if not far_tint.any():
-        # Geometric fallback: everything in extended corridor outside the near prior
-        far_tint = road & far_prior & ~prior
+    # Assessable = geometric near trapezoid ∩ distance band.
+    # Do NOT require classical "road" here — cracked/rutted asphalt often fails
+    # the color/texture grow and was dropping 2nd-lane defects outside the wash.
+    mask = prior & in_band
+    # Optional far wash (usually disabled; green belongs in the assess polygon)
+    far_tint = far_prior & beyond & ~mask
+    if cfg.use_classical_road:
+        far_tint = far_tint & road
 
     return NearField(
         mask=mask,

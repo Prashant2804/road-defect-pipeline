@@ -153,7 +153,12 @@ def run_inference(cfg: InferConfig) -> dict:
             )
             processed += 1
 
-        annotated = draw_near_field(frame, nf)
+        annotated = draw_near_field(
+            frame,
+            nf,
+            far_alpha=cfg.far_wash_alpha,
+            near_alpha=cfg.near_wash_alpha,
+        )
         annotated = draw_boxes(annotated, boxes, cids, confs, CLASS_NAMES)
         annotated = draw_hud(
             annotated,
@@ -257,17 +262,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Default: runs/rfdetr_infer/<video_stem>",
     )
-    p.add_argument("--conf", type=float, default=0.25)
+    p.add_argument("--conf", type=float, default=0.15)
     p.add_argument("--stride", type=int, default=3, dest="frame_stride")
     p.add_argument("--max-frames", type=int, default=0)
     p.add_argument("--z-near", type=float, default=0.5, dest="z_near_m")
     p.add_argument("--z-far", type=float, default=5.0, dest="z_far_m")
-    p.add_argument("--road-top-y", type=float, default=0.55)
+    p.add_argument("--road-top-y", type=float, default=0.52)
     p.add_argument("--road-bottom-y", type=float, default=1.0)
-    p.add_argument("--road-bottom-half-w", type=float, default=0.55)
-    p.add_argument("--road-top-half-w", type=float, default=0.28)
-    p.add_argument("--no-classical-road", action="store_true")
-    p.add_argument("--min-overlap", type=float, default=0.25)
+    p.add_argument("--road-bottom-half-w", type=float, default=0.72)
+    p.add_argument("--road-top-half-w", type=float, default=0.45)
+    p.add_argument("--road-center-x", type=float, default=0.52)
+    p.add_argument(
+        "--classical-road",
+        action="store_true",
+        help="Enable classical color/texture road grow (often drops cracked asphalt)",
+    )
+    p.add_argument("--min-overlap", type=float, default=0.15)
+    p.add_argument("--near-wash-alpha", type=float, default=0.28)
+    p.add_argument(
+        "--far-wash-alpha",
+        type=float,
+        default=0.0,
+        help="Green tint beyond assess band (0=off; wash is in the polygon by default)",
+    )
     p.add_argument("--camera-height-m", type=float, default=None)
     p.add_argument("--camera-pitch-deg", type=float, default=None)
     p.add_argument("--vfov-deg", type=float, default=None)
@@ -305,8 +322,11 @@ def main(argv: list[str] | None = None) -> int:
         road_bottom_y=args.road_bottom_y,
         road_bottom_half_w=args.road_bottom_half_w,
         road_top_half_w=args.road_top_half_w,
-        use_classical_road=not args.no_classical_road,
+        road_center_x=args.road_center_x,
+        use_classical_road=args.classical_road,
         min_overlap=args.min_overlap,
+        near_wash_alpha=args.near_wash_alpha,
+        far_wash_alpha=args.far_wash_alpha,
         camera_height_m=args.camera_height_m,
         camera_pitch_deg=args.camera_pitch_deg,
         vfov_deg=args.vfov_deg,

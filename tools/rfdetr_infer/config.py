@@ -18,21 +18,25 @@ class InferConfig:
         default_factory=lambda: repo_root() / "runs" / "rfdetr_infer" / "latest"
     )
 
-    # Detector
-    conf: float = 0.25
+    # Detector (lower = more recall on cracks / faint defects; more false positives)
+    conf: float = 0.15
     frame_stride: int = 3
     max_frames: int = 0  # 0 = whole video
 
-    # Near-field trapezoid (normalized image coords, Colab-style)
+    # Near-field trapezoid — wide enough for both lanes on typical GoPro dashcam
     z_near_m: float = 0.5
     z_far_m: float = 5.0
     road_bottom_y: float = 1.0
-    road_top_y: float = 0.55  # ~5 m ahead proxy when no camera model
-    road_bottom_half_w: float = 0.55
-    road_top_half_w: float = 0.28
-    road_center_x: float = 0.5
-    use_classical_road: bool = True
-    min_overlap: float = 0.25
+    road_top_y: float = 0.52  # ~5 m ahead proxy when no camera model
+    road_bottom_half_w: float = 0.72
+    road_top_half_w: float = 0.45
+    road_center_x: float = 0.52  # slight right bias (vehicle often left of road center)
+    # Classical grow often drops cracked / rutted asphalt — off by default for gating
+    use_classical_road: bool = False
+    min_overlap: float = 0.15
+    # Overlay: green wash lives in the assess polygon; far corridor tint is optional
+    near_wash_alpha: float = 0.28
+    far_wash_alpha: float = 0.0
 
     # Optional metric camera (metres). If unset, trapezoid top is the far edge.
     camera_height_m: float | None = None

@@ -41,17 +41,18 @@ def _scale_for_frame(h: int) -> dict:
 def draw_near_field(
     frame: np.ndarray,
     nf: NearField,
-    far_alpha: float = 0.35,
-    near_alpha: float = 0.10,
+    far_alpha: float = 0.0,
+    near_alpha: float = 0.28,
 ) -> np.ndarray:
     out = frame.copy()
     h = out.shape[0]
     sc = _scale_for_frame(h)
 
-    # Light wash on assess (near) so corridor reads continuous with far shade
-    if nf.mask is not None and nf.mask.any() and near_alpha > 0:
+    # Primary green wash = full assess polygon (geometry), not classical road blobs
+    wash = nf.mask if nf.mask is not None and nf.mask.any() else nf.prior
+    if wash is not None and wash.any() and near_alpha > 0:
         overlay = out.copy()
-        overlay[nf.mask] = _NEAR_TINT
+        overlay[wash] = _NEAR_TINT
         out = cv2.addWeighted(overlay, near_alpha, out, 1.0 - near_alpha, 0)
 
     if nf.far_tint is not None and nf.far_tint.any() and far_alpha > 0:
