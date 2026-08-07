@@ -1,16 +1,21 @@
-"""Upload RF-DETR inference outputs to a Google Drive folder."""
+"""Upload RF-DETR inference outputs to a Google Drive folder.
+
+Uses YOUR Desktop OAuth client (Testing mode) — not the blocked default gcloud
+Cloud SDK client. One-time browser login saves token.json for later runs.
+"""
 from __future__ import annotations
 
 import argparse
 import mimetypes
 import re
-import sys
 from pathlib import Path
 
 _FOLDER_RE = re.compile(
     r"(?:drive\.google\.com/(?:drive/)?folders/|id=)([A-Za-z0-9_-]{20,})",
     re.I,
 )
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 DEFAULT_FILES = (
     "annotated.mp4",
@@ -19,6 +24,24 @@ DEFAULT_FILES = (
     "map_trail.html",
     "summary.json",
 )
+
+SETUP_HELP = """
+One-time Google Cloud setup (avoids "This app is blocked" from gcloud):
+
+  1. Console → project 614564067545 (or yours)
+  2. APIs & Services → enable Google Drive API
+  3. OAuth consent screen → External → Publishing: Testing
+     → add YOUR Gmail under Test users
+  4. Credentials → Create OAuth client ID → Desktop app
+     → Download JSON → save as ~/secrets/drive_oauth_client.json
+  5. Share the destination Drive folder with that same Gmail (Editor)
+
+Then:
+  ./scripts/upload_infer_results.sh \\
+    --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \\
+    --folder  'https://drive.google.com/drive/folders/FOLDER_ID' \\
+    --client-secret ~/secrets/drive_oauth_client.json
+""".strip()
 
 
 def folder_id_from_url(url_or_id: str) -> str:
@@ -54,59 +77,131 @@ def collect_files(run_dir: Path, names: tuple[str, ...] | None = None) -> list[P
     return found
 
 
-def _drive_service(service_account: Path | None = None):
-    """Build Drive API client.
+def _default_token_path(client_secret: Path) -> Path:
+    cfg = Path.home() / ".config" / "rfdetr_drive"
+    cfg.mkdir(parents=True, exist_ok=True)
+    # Bind token to client file so switching clients does not reuse a bad token
+    return cfg / f"token_{client_secret.stem}.json"
 
-    Prefer a service-account JSON (no browser OAuth — Google blocks full Drive
-    scope on the default gcloud client). Fall back to ADC only if requested.
-    """
+
+def _creds_from_client_secret(
+    client_secret: Path,
+    token_path: Path | None,
+    auth_port: int = 8090,
+):
+    """Installed-app OAuth (Desktop). First run needs a browser once."""
     try:
-        from google.oauth2 import service_account as sa_mod
-        from googleapiclient.discovery import build
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError as e:
         raise SystemExit(
-            "Missing Drive upload deps. Install with:\n"
-            "  .venv/bin/pip install google-api-python-client google-auth google-auth-httplib2\n"
+            "Missing deps. Install with:\n"
+            "  .venv/bin/pip install google-api-python-client google-auth "
+            "google-auth-httplib2 google-auth-oauthlib\n"
             f"Import error: {e}"
         ) from e
 
-    scopes = ["https://www.googleapis.com/auth/drive"]
+    client_secret = Path(client_secret).expanduser()
+    if not client_secret.is_file():
+        raise SystemExit(
+            f"OAuth client secret not found: {client_secret}\n\n{SETUP_HELP}"
+        )
+
+    token_path = (
+        Path(token_path).expanduser()
+        if token_path
+        else _default_token_path(client_secret)
+    )
+    creds = None
+    if token_path.is_file():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+        except Exception as e:
+            print(f"Token refresh failed ({e}); re-authenticating...")
+            creds = None
+
+    if not creds or not creds.valid:
+        print("Google sign-in required (use the Gmail listed as OAuth Test user).")
+        print(f"Client: {client_secret}")
+        print()
+        print("If you are on SSH with no browser on the VM, from your LAPTOP run:")
+        print(f"  ssh -L {auth_port}:localhost:{auth_port} ubuntu@YOUR_VM_IP")
+        print("Keep that tunnel open, then open the URL printed below in your laptop browser.")
+        print()
+        flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), SCOPES)
+        creds = flow.run_local_server(
+            port=auth_port,
+            open_browser=False,
+            authorization_prompt_message=(
+                "Open this URL in your laptop browser (with the SSH -L tunnel up):\n{url}\n"
+            ),
+            success_message=(
+                "Auth OK — you can close this tab and return to the SSH session."
+            ),
+        )
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        print(f"Saved token: {token_path}")
+
+    return creds
+
+
+def _creds_from_service_account(service_account: Path):
+    from google.oauth2 import service_account as sa_mod
+
+    sa_path = Path(service_account).expanduser()
+    if not sa_path.is_file():
+        raise SystemExit(f"Service account JSON not found: {sa_path}")
+    creds = sa_mod.Credentials.from_service_account_file(str(sa_path), scopes=SCOPES)
+    print(f"Using service account: {creds.service_account_email}")
+    return creds
+
+
+def _drive_service(
+    *,
+    client_secret: Path | None = None,
+    token_path: Path | None = None,
+    service_account: Path | None = None,
+    auth_port: int = 8090,
+):
+    try:
+        from googleapiclient.discovery import build
+    except ImportError as e:
+        raise SystemExit(
+            "Missing google-api-python-client. "
+            "pip install google-api-python-client google-auth-oauthlib\n"
+            f"{e}"
+        ) from e
 
     if service_account is not None:
-        sa_path = Path(service_account)
-        if not sa_path.is_file():
-            raise SystemExit(f"Service account JSON not found: {sa_path}")
-        creds = sa_mod.Credentials.from_service_account_file(str(sa_path), scopes=scopes)
-        print(f"Using service account: {creds.service_account_email}")
-        return build("drive", "v3", credentials=creds, cache_discovery=False)
+        creds = _creds_from_service_account(service_account)
+    elif client_secret is not None:
+        creds = _creds_from_client_secret(
+            client_secret, token_path, auth_port=auth_port
+        )
+    else:
+        raise SystemExit(
+            "Pass --client-secret ~/secrets/drive_oauth_client.json\n\n" + SETUP_HELP
+        )
 
-    # ADC / gcloud browser login — often blocked for drive scope ("This app is blocked")
-    raise SystemExit(
-        "Browser OAuth for Drive is blocked by Google on the default Cloud SDK client.\n\n"
-        "Use ONE of these instead:\n\n"
-        "A) Upload to GCS (recommended, already works on this VM):\n"
-        "   ./scripts/upload_infer_to_gcs.sh \\\n"
-        "     --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \\\n"
-        "     --gcs gs://YOUR_BUCKET/rfdetr_infer/ROAD-1-Gopro\n\n"
-        "B) Drive via service account (no browser):\n"
-        "   1. GCP Console → IAM → Service Accounts → Create key (JSON)\n"
-        "   2. Share the Drive folder with the SA email as Editor\n"
-        "   3. ./scripts/upload_infer_results.sh \\\n"
-        "        --run-dir '...' --folder 'https://drive.google.com/...' \\\n"
-        "        --service-account /path/to/sa.json\n"
-    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _auth_help() -> str:
     return (
-        "Cannot access that Drive folder with the current credentials.\n"
-        "If using a service account: share the folder with the SA email as Editor.\n"
-        "Or upload to GCS instead: ./scripts/upload_infer_to_gcs.sh --help"
+        "Cannot access that Drive folder.\n"
+        "- Sign in with the Gmail that owns/edits the folder\n"
+        "- That Gmail must be listed under OAuth consent → Test users\n"
+        "- Folder must be shared with that account as Editor\n\n"
+        + SETUP_HELP
     )
 
 
 def _find_existing(service, folder_id: str, name: str) -> str | None:
-    # Escape single quotes in name for Drive query
     safe = name.replace("\\", "\\\\").replace("'", "\\'")
     q = (
         f"name = '{safe}' and '{folder_id}' in parents "
@@ -165,7 +260,10 @@ def upload_run(
     *,
     overwrite: bool = True,
     extra: list[str] | None = None,
+    client_secret: Path | None = None,
+    token_path: Path | None = None,
     service_account: Path | None = None,
+    auth_port: int = 8090,
 ) -> None:
     folder_id = folder_id_from_url(folder_url)
     names = list(DEFAULT_FILES)
@@ -175,7 +273,12 @@ def upload_run(
 
     print(f"Destination folder id: {folder_id}")
     print(f"Uploading {len(files)} file(s) from {run_dir}")
-    service = _drive_service(service_account)
+    service = _drive_service(
+        client_secret=client_secret,
+        token_path=token_path,
+        service_account=service_account,
+        auth_port=auth_port,
+    )
 
     try:
         meta = (
@@ -203,7 +306,10 @@ def upload_run(
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Upload near-field inference results to a Google Drive folder."
+        description="Upload near-field inference results to Google Drive "
+        "(Desktop OAuth client — not gcloud ADC).",
+        epilog=SETUP_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--run-dir",
@@ -217,10 +323,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Google Drive folder URL or folder id",
     )
     p.add_argument(
+        "--client-secret",
+        type=Path,
+        default=None,
+        help="Downloaded Desktop OAuth client JSON (required unless --service-account)",
+    )
+    p.add_argument(
+        "--token",
+        type=Path,
+        default=None,
+        help="Where to store/reuse OAuth token (default: ~/.config/rfdetr_drive/token_*.json)",
+    )
+    p.add_argument(
+        "--auth-port",
+        type=int,
+        default=8090,
+        help="Local port for OAuth redirect (SSH: ssh -L 8090:localhost:8090 ...)",
+    )
+    p.add_argument(
         "--service-account",
         type=Path,
         default=None,
-        help="Path to GCP service-account JSON (required; browser OAuth is blocked)",
+        help="Optional: SA JSON instead of Desktop OAuth (share folder with SA email)",
     )
     p.add_argument(
         "--no-overwrite",
@@ -238,12 +362,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.client_secret is None and args.service_account is None:
+        raise SystemExit(
+            "Missing --client-secret (or --service-account).\n\n" + SETUP_HELP
+        )
     upload_run(
         args.run_dir,
         args.folder,
         overwrite=not args.no_overwrite,
         extra=list(args.extra or []),
+        client_secret=args.client_secret,
+        token_path=args.token,
         service_account=args.service_account,
+        auth_port=args.auth_port,
     )
     return 0
 

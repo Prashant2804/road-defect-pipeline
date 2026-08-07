@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
-# Upload RF-DETR inference outputs.
+# Upload RF-DETR inference outputs to Google Drive (compliant Desktop OAuth).
 #
-# Browser OAuth to Drive is blocked by Google ("This app is blocked") for the
-# default Cloud SDK client + full Drive scope. Prefer GCS, or a service account.
+# Do NOT use gcloud application-default login for Drive — Google blocks that
+# client for full Drive scope ("This app is blocked").
 #
-# --- A) Google Cloud Storage (recommended) ---
-#   ./scripts/upload_infer_to_gcs.sh \
+# === One-time Console setup ===
+# 1. GCP project → enable Google Drive API
+# 2. OAuth consent screen → External → Testing → add YOUR Gmail as Test user
+# 3. Credentials → Create OAuth client ID → Desktop app → Download JSON
+# 4. Save on VM:  mkdir -p ~/secrets && mv ~/Downloads/client_secret_*.json ~/secrets/drive_oauth_client.json
+# 5. Share destination Drive folder with that Gmail (Editor)
+#
+# === Upload ROAD-1 results ===
+#   ./scripts/upload_infer_results.sh \
 #     --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \
-#     --gcs gs://YOUR_BUCKET/rfdetr_infer/ROAD-1-Gopro
+#     --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
+#     --client-secret ~/secrets/drive_oauth_client.json
 #
-# --- B) Google Drive via service account (no browser) ---
-#   1. Create SA key JSON in GCP Console
-#   2. Share the Drive folder with the SA email as Editor
-#   3. ./scripts/upload_infer_results.sh \
-#        --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \
-#        --folder  'https://drive.google.com/drive/folders/FOLDER_ID' \
-#        --service-account /path/to/sa.json
+# First-time auth from a laptop (SSH tunnel so localhost redirect works):
+#   ssh -L 8090:localhost:8090 ubuntu@YOUR_VM_IP
+#   # in that session:
+#   ./scripts/upload_infer_results.sh ... --client-secret ~/secrets/drive_oauth_client.json
+# Open the printed URL in your laptop browser, approve, return to SSH.
 #
 # Uploads: annotated.mp4, defects.csv, defects.json, map_trail.html, summary.json
+#
+# Fallback (no API): scp the run folder to your laptop, drag into drive.google.com
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,11 +41,17 @@ fi
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-"$PY" -m pip install -q google-api-python-client google-auth google-auth-httplib2
+"$PY" -m pip install -q \
+  google-api-python-client \
+  google-auth \
+  google-auth-httplib2 \
+  google-auth-oauthlib
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage (Drive + SA): $0 --run-dir PATH --folder URL --service-account sa.json" >&2
-  echo "Or use GCS:         ./scripts/upload_infer_to_gcs.sh --run-dir PATH --gcs gs://..." >&2
+  echo "Usage:" >&2
+  echo "  $0 --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \\" >&2
+  echo "     --folder 'https://drive.google.com/drive/folders/FOLDER_ID' \\" >&2
+  echo "     --client-secret ~/secrets/drive_oauth_client.json" >&2
   exit 1
 fi
 

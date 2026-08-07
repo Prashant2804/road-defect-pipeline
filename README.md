@@ -622,6 +622,29 @@ Outputs in `runs/rfdetr_infer/<video_stem>/`:
 Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, etc. For metric
 depth instead of the trapezoid proxy, pass `--camera-height-m` and `--vfov-deg`.
 
+**Upload results to Google Drive** (use your own Desktop OAuth client — not
+`gcloud auth application-default`, which Google blocks for Drive):
+
+1. GCP Console → OAuth consent **Testing** → add your Gmail as test user  
+2. Create **OAuth client ID → Desktop app** → download JSON to  
+   `~/secrets/drive_oauth_client.json` on the VM  
+3. Share the destination Drive folder with that Gmail (Editor)  
+4. Run:
+
+```bash
+# First-time auth: from your laptop open an SSH tunnel, then on the VM:
+ssh -L 8090:localhost:8090 ubuntu@YOUR_VM_IP
+
+./scripts/upload_infer_results.sh \
+  --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \
+  --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
+  --client-secret ~/secrets/drive_oauth_client.json
+```
+
+Open the printed URL in your **laptop** browser (same Gmail as OAuth test user).  
+Later runs reuse `~/.config/rfdetr_drive/token_*.json` (no browser).  
+Fallback: `scp` the run folder to your laptop and drag into drive.google.com.
+
 **Phase 2 (not in this pass):** `inference.backend: rfdetr` in the full `rdd`
 pipeline (`detect_track` + IRC report), and optional 3-panel dashboard (telemetry
 sidebar + overlay + north-up map) matching the inspiration UI.

@@ -57,7 +57,8 @@ source "$VENV/bin/activate"
   "gdown>=5.0" \
   "google-api-python-client>=2.0" \
   "google-auth>=2.0" \
-  "google-auth-httplib2>=0.2"
+  "google-auth-httplib2>=0.2" \
+  "google-auth-oauthlib>=1.0"
 
 echo ""
 echo "==> Verifying imports"
