@@ -47,5 +47,5 @@ class InferConfig:
     iou_match: float = 0.3
     max_age: int = 15  # strided frames without match before closing track
 
-    # Encode quality (H.264 CRF; lower = sharper / larger)
-    crf: int = 18
+    # Encode quality (H.264 CRF; lower = sharper / larger). 23 ≈ Drive-friendly size.
+    crf: int = 23

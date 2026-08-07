@@ -16,7 +16,7 @@ class FfmpegH264Writer:
         height: int,
         fps: float,
         *,
-        crf: int = 18,
+        crf: int = 23,
         preset: str = "medium",
     ):
         self.path = Path(path)
