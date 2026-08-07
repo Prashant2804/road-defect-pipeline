@@ -15,9 +15,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [[ -f "$ROOT/.venv/bin/activate" ]]; then
+if [[ -x "$ROOT/.venv/bin/python" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT/.venv/bin/activate"
+  PY="$ROOT/.venv/bin/python"
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+  PY="${VIRTUAL_ENV}/bin/python"
+else
+  PY="${PYTHON:-python3}"
 fi
 
 if [[ -f "$ROOT/.env" ]]; then
@@ -32,18 +37,25 @@ if [[ -z "${ROBOFLOW_API_KEY:-}" ]]; then
   exit 1
 fi
 
-PY="${PYTHON:-python}"
+if ! command -v "$PY" >/dev/null 2>&1 && [[ ! -x "$PY" ]]; then
+  echo "ERROR: Python not found ($PY). Run ./scripts/setup_rfdetr_vm.sh first." >&2
+  exit 1
+fi
+
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
+echo "==> Using: $PY ($("$PY" --version 2>&1))"
 echo "==> nvidia-smi"
 nvidia-smi || true
 
 echo ""
 echo "==> Download + prepare Stage 1 (CRRI)"
+# shellcheck disable=SC2086
 $PY -m tools.rfdetr_train.download ${EXTRA_DOWNLOAD_ARGS:-}
 
 echo ""
 echo "==> Train RFDETRMedium Stage 1"
+# shellcheck disable=SC2086
 $PY -m tools.rfdetr_train.train ${EXTRA_TRAIN_ARGS:-}
 
 echo ""

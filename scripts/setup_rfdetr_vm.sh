@@ -8,6 +8,8 @@
 #   ./scripts/run_stage1.sh
 #
 # Long runs should live in tmux/screen so SSH disconnects do not kill training.
+#
+# Ubuntu prerequisite (once):  sudo apt install -y python3.12-venv
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,17 +22,28 @@ echo "==> Repo: $ROOT"
 echo "==> Python: $($PYTHON --version 2>&1)"
 echo "==> Venv: $VENV"
 
-if [[ ! -d "$VENV" ]]; then
+if ! "$PYTHON" -c "import ensurepip" 2>/dev/null; then
+  echo "ERROR: ensurepip missing. On Ubuntu run:" >&2
+  echo "  sudo apt install -y python3.12-venv" >&2
+  exit 1
+fi
+
+# Recreate if missing or left broken from a previous failed attempt
+if [[ ! -x "$VENV/bin/python" ]]; then
+  rm -rf "$VENV"
   "$PYTHON" -m venv "$VENV"
 fi
+
+# Prefer venv python explicitly (Ubuntu often has no bare `python`)
+PY="$VENV/bin/python"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 
-python -m pip install --upgrade pip wheel setuptools
+"$PY" -m pip install --upgrade pip wheel setuptools
 
 # Core train stack. Torch comes via rfdetr[train] / pip resolution.
 # On bleeding-edge GPUs (5090), install a CUDA wheel that matches your driver if needed.
-python -m pip install \
+"$PY" -m pip install \
   "rfdetr[train]" \
   "roboflow>=1.1.0" \
   "kaggle>=1.6.0" \
@@ -42,7 +55,7 @@ python -m pip install \
 
 echo ""
 echo "==> Verifying imports"
-python - <<'PY'
+"$PY" - <<'PY'
 from rfdetr import RFDETRMedium
 import torch
 print("RFDETRMedium OK")
