@@ -54,7 +54,10 @@ source "$VENV/bin/activate"
   "PyYAML>=6.0" \
   "python-dotenv>=1.0" \
   "tqdm" \
-  "gdown>=5.0"
+  "gdown>=5.0" \
+  "google-api-python-client>=2.0" \
+  "google-auth>=2.0" \
+  "google-auth-httplib2>=0.2"
 
 echo ""
 echo "==> Verifying imports"
