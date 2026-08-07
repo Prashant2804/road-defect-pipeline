@@ -54,11 +54,14 @@ def collect_files(run_dir: Path, names: tuple[str, ...] | None = None) -> list[P
     return found
 
 
-def _drive_service():
-    """Build Drive API client from gcloud / ADC credentials."""
+def _drive_service(service_account: Path | None = None):
+    """Build Drive API client.
+
+    Prefer a service-account JSON (no browser OAuth — Google blocks full Drive
+    scope on the default gcloud client). Fall back to ADC only if requested.
+    """
     try:
-        from google.auth import default as google_auth_default
-        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account as sa_mod
         from googleapiclient.discovery import build
     except ImportError as e:
         raise SystemExit(
@@ -67,28 +70,38 @@ def _drive_service():
             f"Import error: {e}"
         ) from e
 
-    # drive.file cannot see arbitrary existing folders (404). Need full drive scope.
     scopes = ["https://www.googleapis.com/auth/drive"]
-    creds, _ = google_auth_default(scopes=scopes)
-    if not getattr(creds, "valid", False):
-        if getattr(creds, "refresh_token", None):
-            creds.refresh(Request())
-        else:
-            raise SystemExit(_auth_help())
-    # If ADC was created with only drive.file, API calls to existing folders 404.
-    # Detect via a lightweight about() after build is awkward; document re-login.
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    if service_account is not None:
+        sa_path = Path(service_account)
+        if not sa_path.is_file():
+            raise SystemExit(f"Service account JSON not found: {sa_path}")
+        creds = sa_mod.Credentials.from_service_account_file(str(sa_path), scopes=scopes)
+        print(f"Using service account: {creds.service_account_email}")
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    # ADC / gcloud browser login — often blocked for drive scope ("This app is blocked")
+    raise SystemExit(
+        "Browser OAuth for Drive is blocked by Google on the default Cloud SDK client.\n\n"
+        "Use ONE of these instead:\n\n"
+        "A) Upload to GCS (recommended, already works on this VM):\n"
+        "   ./scripts/upload_infer_to_gcs.sh \\\n"
+        "     --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \\\n"
+        "     --gcs gs://YOUR_BUCKET/rfdetr_infer/ROAD-1-Gopro\n\n"
+        "B) Drive via service account (no browser):\n"
+        "   1. GCP Console → IAM → Service Accounts → Create key (JSON)\n"
+        "   2. Share the Drive folder with the SA email as Editor\n"
+        "   3. ./scripts/upload_infer_results.sh \\\n"
+        "        --run-dir '...' --folder 'https://drive.google.com/...' \\\n"
+        "        --service-account /path/to/sa.json\n"
+    )
 
 
 def _auth_help() -> str:
     return (
-        "Google credentials missing/invalid for Drive, or logged in with too-narrow scope.\n"
-        "Re-auth on the VM (browser flow), using FULL drive scope:\n\n"
-        "  gcloud auth application-default login \\\n"
-        "    --scopes=https://www.googleapis.com/auth/drive,"
-        "https://www.googleapis.com/auth/cloud-platform\n\n"
-        "Then share the destination folder with THAT Google account as Editor\n"
-        "(or use an account that already owns the folder)."
+        "Cannot access that Drive folder with the current credentials.\n"
+        "If using a service account: share the folder with the SA email as Editor.\n"
+        "Or upload to GCS instead: ./scripts/upload_infer_to_gcs.sh --help"
     )
 
 
@@ -101,7 +114,14 @@ def _find_existing(service, folder_id: str, name: str) -> str | None:
     )
     resp = (
         service.files()
-        .list(q=q, spaces="drive", fields="files(id, name)", pageSize=5)
+        .list(
+            q=q,
+            spaces="drive",
+            fields="files(id, name)",
+            pageSize=5,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
         .execute()
     )
     files = resp.get("files") or []
@@ -119,14 +139,21 @@ def upload_file(service, local: Path, folder_id: str, overwrite: bool = True) ->
     size_mb = local.stat().st_size / (1024 * 1024)
     if existing:
         print(f"  updating {local.name} ({size_mb:.1f} MB) ...")
-        service.files().update(fileId=existing, media_body=media).execute()
+        service.files().update(
+            fileId=existing, media_body=media, supportsAllDrives=True
+        ).execute()
         return existing
 
     print(f"  uploading {local.name} ({size_mb:.1f} MB) ...")
     meta = {"name": local.name, "parents": [folder_id]}
     created = (
         service.files()
-        .create(body=meta, media_body=media, fields="id, name, webViewLink")
+        .create(
+            body=meta,
+            media_body=media,
+            fields="id, name, webViewLink",
+            supportsAllDrives=True,
+        )
         .execute()
     )
     return created["id"]
@@ -138,6 +165,7 @@ def upload_run(
     *,
     overwrite: bool = True,
     extra: list[str] | None = None,
+    service_account: Path | None = None,
 ) -> None:
     folder_id = folder_id_from_url(folder_url)
     names = list(DEFAULT_FILES)
@@ -147,13 +175,16 @@ def upload_run(
 
     print(f"Destination folder id: {folder_id}")
     print(f"Uploading {len(files)} file(s) from {run_dir}")
-    service = _drive_service()
+    service = _drive_service(service_account)
 
-    # Sanity: can we see the folder?
     try:
         meta = (
             service.files()
-            .get(fileId=folder_id, fields="id, name, mimeType")
+            .get(
+                fileId=folder_id,
+                fields="id, name, mimeType",
+                supportsAllDrives=True,
+            )
             .execute()
         )
         print(f"Folder: {meta.get('name')} ({meta.get('mimeType')})")
@@ -186,6 +217,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Google Drive folder URL or folder id",
     )
     p.add_argument(
+        "--service-account",
+        type=Path,
+        default=None,
+        help="Path to GCP service-account JSON (required; browser OAuth is blocked)",
+    )
+    p.add_argument(
         "--no-overwrite",
         action="store_true",
         help="Always create new files instead of updating same names",
@@ -206,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         args.folder,
         overwrite=not args.no_overwrite,
         extra=list(args.extra or []),
+        service_account=args.service_account,
     )
     return 0
 

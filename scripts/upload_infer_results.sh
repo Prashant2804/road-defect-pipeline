@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Upload RF-DETR inference outputs to a Google Drive folder.
+# Upload RF-DETR inference outputs.
 #
-# One-time auth on the VM (browser / device login) — needs FULL drive scope
-# (drive.file alone cannot open an existing destination folder → 404):
-#   gcloud auth application-default login \
-#     --scopes=https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/cloud-platform
+# Browser OAuth to Drive is blocked by Google ("This app is blocked") for the
+# default Cloud SDK client + full Drive scope. Prefer GCS, or a service account.
 #
-# Share the destination Drive folder with that same Google account (Editor).
-#
-# Usage:
-#   ./scripts/upload_infer_results.sh \
+# --- A) Google Cloud Storage (recommended) ---
+#   ./scripts/upload_infer_to_gcs.sh \
 #     --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \
-#     --folder  'https://drive.google.com/drive/folders/YOUR_FOLDER_ID'
+#     --gcs gs://YOUR_BUCKET/rfdetr_infer/ROAD-1-Gopro
+#
+# --- B) Google Drive via service account (no browser) ---
+#   1. Create SA key JSON in GCP Console
+#   2. Share the Drive folder with the SA email as Editor
+#   3. ./scripts/upload_infer_results.sh \
+#        --run-dir 'runs/rfdetr_infer/ROAD-1 Gopro' \
+#        --folder  'https://drive.google.com/drive/folders/FOLDER_ID' \
+#        --service-account /path/to/sa.json
 #
 # Uploads: annotated.mp4, defects.csv, defects.json, map_trail.html, summary.json
 set -euo pipefail
@@ -32,7 +36,8 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 "$PY" -m pip install -q google-api-python-client google-auth google-auth-httplib2
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 --run-dir PATH --folder DRIVE_FOLDER_URL" >&2
+  echo "Usage (Drive + SA): $0 --run-dir PATH --folder URL --service-account sa.json" >&2
+  echo "Or use GCS:         ./scripts/upload_infer_to_gcs.sh --run-dir PATH --gcs gs://..." >&2
   exit 1
 fi
 
