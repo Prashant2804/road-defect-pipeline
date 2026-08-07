@@ -28,8 +28,10 @@ if ! "$PYTHON" -c "import ensurepip" 2>/dev/null; then
   exit 1
 fi
 
-# Recreate if missing or left broken from a previous failed attempt
-if [[ ! -x "$VENV/bin/python" ]]; then
+# Recreate if missing or left broken (failed ensurepip can leave a half-dir
+# with a python symlink but no activate script).
+if [[ ! -f "$VENV/bin/activate" || ! -x "$VENV/bin/python" ]]; then
+  echo "==> Recreating venv (missing or incomplete)"
   rm -rf "$VENV"
   "$PYTHON" -m venv "$VENV"
 fi

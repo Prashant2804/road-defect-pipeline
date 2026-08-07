@@ -45,10 +45,11 @@ def download_roboflow(
     api_key: str | None = None,
     fmt: str = "coco",
 ) -> Path:
-    """Download a Roboflow Universe export and return the real COCO root.
+    """Download a Roboflow Universe export and return the real COCO/YOLO root.
 
-    Roboflow sometimes writes under cwd (e.g. ``CRRI-...-3/``) instead of
-    ``dest``. We search for ``train/_annotations.coco.json`` after download.
+    Roboflow skips the download when ``location`` already exists and
+    ``overwrite=False`` (the SDK default). We always pass ``overwrite=True``
+    and still search cwd for the classic ``Project-Name-N`` fallback path.
     """
     api_key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
     if not api_key:
@@ -56,36 +57,49 @@ def download_roboflow(
 
     from roboflow import Roboflow
 
-    dest = Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-    cwd_before = set(Path.cwd().iterdir()) if Path.cwd().exists() else set()
+    dest = Path(dest).resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Existing empty/partial dirs make Roboflow no-op unless overwrite=True
+    if dest.exists():
+        shutil.rmtree(dest)
 
-    print(f"  Roboflow {workspace}/{project} v{version} → {dest}")
+    cwd = Path.cwd()
+    cwd_before = {p.resolve() for p in cwd.iterdir()} if cwd.exists() else set()
+
+    print(f"  Roboflow {workspace}/{project} v{version} format={fmt} → {dest}")
     rf = Roboflow(api_key=api_key)
-    ds = (
-        rf.workspace(workspace)
-        .project(project)
-        .version(version)
-        .download(fmt, location=str(dest))
-    )
-    reported = Path(getattr(ds, "location", dest) or dest)
+    ver = rf.workspace(workspace).project(project).version(version)
 
-    search_roots = [reported, dest, Path.cwd(), dest.parent]
-    # New top-level dirs created under cwd during download
-    if Path.cwd().exists():
-        for p in Path.cwd().iterdir():
-            if p not in cwd_before and p.is_dir():
+    try:
+        ds = ver.download(fmt, location=str(dest), overwrite=True)
+    except TypeError:
+        # older SDK without overwrite=
+        ds = ver.download(fmt, location=str(dest))
+
+    reported = Path(getattr(ds, "location", dest) or dest)
+    print(f"  reported location={reported}")
+
+    search_roots: list[Path] = [reported, dest, cwd, dest.parent]
+    if cwd.exists():
+        for p in cwd.iterdir():
+            if p.resolve() not in cwd_before and p.is_dir():
+                search_roots.append(p)
+        # Classic Roboflow default folder names
+        for p in cwd.iterdir():
+            if p.is_dir() and (
+                project.replace("_", "-").lower() in p.name.lower()
+                or "crri" in p.name.lower()
+            ):
                 search_roots.append(p)
 
     found = find_coco_root(search_roots)
     if found is None:
-        # last resort: any _annotations under dest / cwd
         for root in search_roots:
-            if not Path(root).exists():
+            root = Path(root)
+            if not root.exists():
                 continue
-            hits = list(Path(root).rglob("_annotations.coco.json"))
+            hits = list(root.rglob("_annotations.coco.json"))
             if hits:
-                # prefer train/
                 for h in hits:
                     if h.parent.name == "train":
                         found = h.parent.parent
@@ -94,35 +108,47 @@ def download_roboflow(
                     found = hits[0].parent.parent
                 break
 
+    # YOLO fallback (data.yaml) — ingest_to_coco can convert later
     if found is None:
-        kids = sorted(p.name for p in dest.iterdir()) if dest.exists() else []
+        for root in search_roots:
+            root = Path(root)
+            if not root.exists():
+                continue
+            yamls = list(root.rglob("data.yaml"))
+            if yamls:
+                found = yamls[0].parent
+                print(f"  found YOLO data.yaml under {found}")
+                break
+
+    if found is None:
+        # Debug: show what actually appeared
+        debug_bits = []
+        for label, path in (("dest", dest), ("reported", reported), ("cwd", cwd)):
+            if Path(path).exists():
+                kids = sorted(p.name for p in Path(path).iterdir())[:30]
+                debug_bits.append(f"{label}={path} kids={kids}")
+            else:
+                debug_bits.append(f"{label}={path} (missing)")
         raise RuntimeError(
-            f"Roboflow download finished but no COCO annotations found. "
-            f"dest={dest} reported={reported} contents={kids[:20]}"
+            "Roboflow download finished but no COCO/YOLO annotations found. "
+            + " | ".join(debug_bits)
         )
 
-    # Normalize into dest if Roboflow wrote elsewhere
-    if found.resolve() != dest.resolve():
-        print(f"  discovered COCO at {found} (reported={reported})")
-        if dest.exists() and any(dest.iterdir()):
-            # dest may be empty placeholder; clear and copy
-            if not list(dest.rglob("_annotations.coco.json")):
-                for child in list(dest.iterdir()):
-                    if child.is_dir():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-        if not list(dest.rglob("_annotations.coco.json")):
-            for item in found.iterdir():
-                target = dest / item.name
-                if item.is_dir():
-                    if target.exists():
-                        shutil.rmtree(target)
-                    shutil.copytree(item, target)
-                else:
-                    shutil.copy2(item, target)
-            found = dest
+    # Normalize into dest
+    found = Path(found).resolve()
+    if found != dest:
+        print(f"  discovered dataset at {found} — copying into {dest}")
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(found, dest)
+        found = dest
+    elif not dest.exists():
+        shutil.copytree(found, dest)
+        found = dest
 
+    n_ann = len(list(found.rglob("_annotations.coco.json")))
+    n_yaml = len(list(found.rglob("data.yaml")))
+    print(f"  OK dataset root={found} coco_jsons={n_ann} data_yaml={n_yaml}")
     return found
 
 
@@ -262,7 +288,7 @@ def prepare_stage1(
     for name, kind, kwargs, force_pothole in plan:
         print(f"\n=== {name} ===")
         raw_dest = raw_dir / name
-        raw_dest.mkdir(parents=True, exist_ok=True)
+        # Do NOT pre-create raw_dest: Roboflow no-ops on existing dirs unless overwrite.
         try:
             if kind == "roboflow":
                 raw = download_roboflow(
@@ -273,6 +299,7 @@ def prepare_stage1(
                     fmt=cfg.roboflow_format,
                 )
             else:
+                raw_dest.mkdir(parents=True, exist_ok=True)
                 raw = download_kaggle(kwargs["dataset"], raw_dest)
             part_out = parts_dir / name
             if force_pothole:
@@ -282,8 +309,10 @@ def prepare_stage1(
             parts.append(part_out)
             print(f"  OK → {part_out}")
         except (Exception, SystemExit) as e:
-            # Soft-skip optional extras; CRRI failure still soft when multi-source
+            # Soft-skip optional extras; if nothing succeeds we exit below.
             print(f"  SKIPPED {name}: {e}")
+            if name == "crri" and len(plan) == 1:
+                raise
 
     if not parts:
         raise SystemExit("No Stage 1 sources downloaded successfully")
