@@ -636,6 +636,48 @@ Outputs: `data/rfdetr/stage2_yolo/`, `runs/rtdetr_stage2/weights/best.pt`.
 Workers prefetch on **CPU RAM**; `--batch` / `--memory-fraction` use **GPU VRAM**;
 `--cache ram` keeps images in host RAM so the GPU stays busier.
 
+### RT-DETR near-field inference (test Stage-2 weights)
+
+Same near-field overlay / GPS / dashboard pipeline as RF-DETR, with `--backend rtdetr`.
+Always use a **new** `--out-dir` so earlier POC runs stay untouched.
+
+**Set Google Maps API key** (for `dashboard/index.html`):
+
+```bash
+cd ~/road-defect-pipeline
+# Append to .env (do not commit the real key):
+echo 'GOOGLE_MAPS_API_KEY=AIza...your_key...' >> .env
+# Or one shell session:
+export GOOGLE_MAPS_API_KEY='AIza...your_key...'
+```
+
+Enable **Maps JavaScript API** in Google Cloud; restrict the key (HTTP referrers).
+
+**Infer ROAD-1 with `best.pt`:**
+
+```bash
+cd ~/road-defect-pipeline && git pull
+ls runs/rtdetr_stage2/weights/
+
+tmux new -s rtdetr_infer
+./scripts/run_rtdetr_infer.sh \
+  --video 'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
+  --srt   'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
+  --weights runs/rtdetr_stage2/weights/best.pt \
+  --z-far 5 \
+  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-rtdetr'
+```
+
+**Upload** to a new Drive subfolder under the existing parent:
+
+```bash
+./scripts/upload_infer_results.sh \
+  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-rtdetr' \
+  --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
+  --subfolder 'ROAD-1-Gopro-rtdetr' \
+  --client-secret ~/secrets/drive_oauth_client.json
+```
+
 ### RF-DETR near-field inference (Phase 1)
 
 Standalone dashcam inference: detect only in a **near-field trapezoid** (default

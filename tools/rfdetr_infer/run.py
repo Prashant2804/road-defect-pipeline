@@ -1,4 +1,4 @@
-"""CLI: RF-DETR near-field dashcam inference → video + CSV + map trail."""
+"""CLI: near-field dashcam inference (RF-DETR or Ultralytics RT-DETR)."""
 from __future__ import annotations
 
 import argparse
@@ -25,13 +25,22 @@ from .track_simple import SimpleTracker
 
 
 def _predictions_to_arrays(detections):
-    """Normalize rfdetr / supervision outputs to numpy arrays."""
+    """Normalize rfdetr / supervision / ultralytics outputs to numpy arrays."""
     if detections is None:
         return (
             np.zeros((0, 4), dtype=np.float32),
             None,
             None,
         )
+    # Ultralytics Results
+    if hasattr(detections, "boxes"):
+        boxes = detections.boxes
+        if boxes is None or len(boxes) == 0:
+            return np.zeros((0, 4), dtype=np.float32), None, None
+        xyxy = boxes.xyxy.detach().cpu().numpy().astype(np.float32)
+        cid = boxes.cls.detach().cpu().numpy().astype(np.int64)
+        conf = boxes.conf.detach().cpu().numpy().astype(np.float32)
+        return xyxy, cid, conf
     # supervision Detections
     if hasattr(detections, "xyxy"):
         xyxy = np.asarray(detections.xyxy, dtype=np.float32)
@@ -51,24 +60,74 @@ def _predictions_to_arrays(detections):
     return np.zeros((0, 4), dtype=np.float32), None, None
 
 
+def _load_model(cfg: InferConfig):
+    backend = (cfg.backend or "rfdetr").lower().strip()
+    weights = Path(cfg.weights) if cfg.weights else None
+    if weights is None or not weights.exists():
+        raise SystemExit(f"Missing weights: {cfg.weights}")
+
+    if backend == "rtdetr":
+        from ultralytics import RTDETR
+
+        print(f"Loading Ultralytics RTDETR from {weights}")
+        model = RTDETR(str(weights))
+        return "rtdetr", model
+
+    if backend != "rfdetr":
+        raise SystemExit(f"Unknown --backend {backend!r} (use rfdetr or rtdetr)")
+
+    # Prefer Large if checkpoint name suggests it; else Medium (Stage-1 default)
+    name = weights.name.lower()
+    try:
+        if "large" in name or "stage2" in str(weights).lower():
+            from rfdetr import RFDETRLarge
+
+            print(f"Loading RFDETRLarge from {weights}")
+            return "rfdetr", RFDETRLarge(pretrain_weights=str(weights))
+    except Exception as e:
+        print(f"RFDETRLarge load failed ({e}); falling back to Medium")
+
+    from rfdetr import RFDETRMedium
+
+    print(f"Loading RFDETRMedium from {weights}")
+    return "rfdetr", RFDETRMedium(pretrain_weights=str(weights))
+
+
+def _predict(backend: str, model, frame_bgr: np.ndarray, conf: float):
+    if backend == "rtdetr":
+        results = model.predict(frame_bgr, conf=conf, verbose=False)
+        return results[0] if results else None
+
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+    dets = model.predict(pil, threshold=conf)
+    try:
+        import supervision as sv
+
+        if not isinstance(dets, sv.Detections):
+            try:
+                dets = sv.Detections.from_inference(dets)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    return dets
+
+
 def run_inference(cfg: InferConfig) -> dict:
     if cfg.video is None or not Path(cfg.video).exists():
         raise SystemExit(f"Missing video: {cfg.video}")
     if cfg.weights is None or not Path(cfg.weights).exists():
         raise SystemExit(
             f"Missing weights: {cfg.weights}\n"
-            "Pass --weights runs/rfdetr_stage1/checkpoint_best_total.pth"
+            "Pass --weights runs/rtdetr_stage2/weights/best.pt  (or RF-DETR .pth)"
         )
 
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     gps = load_gps(Path(cfg.video), Path(cfg.srt) if cfg.srt else None)
-
-    from rfdetr import RFDETRMedium
-
-    print(f"Loading RFDETRMedium from {cfg.weights}")
-    model = RFDETRMedium(pretrain_weights=str(cfg.weights))
+    backend, model = _load_model(cfg)
 
     cap = cv2.VideoCapture(str(cfg.video))
     if not cap.isOpened():
@@ -81,12 +140,14 @@ def run_inference(cfg: InferConfig) -> dict:
 
     annotated_path = out_dir / "annotated.mp4"
     # Proven full-length path: OpenCV mp4v during infer, then H.264 CRF compress.
-    # (Direct ffmpeg pipe previously truncated long GoPro runs to ~seconds.)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(annotated_path), fourcc, fps, (w, h))
     if not writer.isOpened():
         raise SystemExit(f"Could not open VideoWriter for {annotated_path}")
-    print(f"Writing annotated video (OpenCV mp4v → H.264 crf={cfg.crf}) → {annotated_path}")
+    print(
+        f"Writing annotated video (OpenCV mp4v → H.264 crf={cfg.crf}) "
+        f"backend={backend} → {annotated_path}"
+    )
 
     tracker = SimpleTracker(iou_match=cfg.iou_match, max_age=cfg.max_age)
     unique_counts: Counter[str] = Counter()
@@ -113,7 +174,6 @@ def run_inference(cfg: InferConfig) -> dict:
         chainage = gps.distance_at_time(t_s) if gps.has_data else None
         fix = gps.at_time(t_s) if len(gps) else None
 
-        # Sample route ~2 Hz for map polyline
         if fix is not None and (
             not route_samples or t_s - route_samples[-1]["t"] >= 0.5
         ):
@@ -134,20 +194,7 @@ def run_inference(cfg: InferConfig) -> dict:
         nf = build_near_field(frame, cfg)
 
         if do_detect:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil = Image.fromarray(rgb)
-            dets = model.predict(pil, threshold=cfg.conf)
-            try:
-                import supervision as sv
-
-                if not isinstance(dets, sv.Detections):
-                    try:
-                        dets = sv.Detections.from_inference(dets)
-                    except Exception:
-                        pass
-            except ImportError:
-                pass
-
+            dets = _predict(backend, model, frame, cfg.conf)
             boxes, cids, confs = _predictions_to_arrays(dets)
             raw_dets += len(boxes)
             boxes, cids, confs, n_drop = gate_boxes(
@@ -187,7 +234,6 @@ def run_inference(cfg: InferConfig) -> dict:
     cap.release()
     writer.release()
 
-    # OpenCV mp4v is huge / poorly playable — always recompress to H.264 for Drive
     try:
         from .compress_video import compress_mp4
 
@@ -210,14 +256,18 @@ def run_inference(cfg: InferConfig) -> dict:
         json.dumps(route_samples, indent=2), encoding="utf-8"
     )
     maps_key = os.environ.get("GOOGLE_MAPS_API_KEY") or None
-    # New 3-panel dashboard lives in dashboard/ — does not replace legacy map_trail.html
     dash_dir = out_dir / "dashboard"
     dash_dir.mkdir(parents=True, exist_ok=True)
+    title = (
+        "RT-DETR near-field defects"
+        if backend == "rtdetr"
+        else "RF-DETR near-field defects"
+    )
     write_map_trail(
         dash_dir / "index.html",
         route=route_samples,
         defects=rows,
-        title="RF-DETR near-field defects",
+        title=title,
         video_src="../annotated.mp4",
         z_far_m=cfg.z_far_m,
         maps_api_key=maps_key,
@@ -243,6 +293,7 @@ def run_inference(cfg: InferConfig) -> dict:
     summary = {
         "video": str(cfg.video),
         "weights": str(cfg.weights),
+        "backend": backend,
         "out_dir": str(out_dir),
         "frames_total": frame_i,
         "frames_detected": processed,
@@ -260,13 +311,14 @@ def run_inference(cfg: InferConfig) -> dict:
         "annotated_duration_s": None if out_s is None else round(out_s, 1),
         "elapsed_s": round(elapsed, 1),
         "phase2_note": (
-            "Phase 2 (later): set inference.backend=rfdetr in config.yaml and "
+            "Phase 2 (later): set inference.backend in config.yaml and "
             "reuse detect_track + IRC report; optional full 3-panel dashboard."
         ),
     }
     write_summary(out_dir / "summary.json", summary)
 
     print(f"\nDone in {elapsed:.1f}s → {out_dir}")
+    print(f"  backend:   {backend}")
     print(f"  annotated: {annotated_path}")
     print(f"  defects:   {out_dir / 'defects.csv'} ({len(rows)} unique)")
     print(f"  map:       {out_dir / 'dashboard' / 'index.html'}")
@@ -275,7 +327,7 @@ def run_inference(cfg: InferConfig) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="RF-DETR near-field dashcam inference (boxes + SRT map trail)."
+        description="Near-field dashcam inference (RF-DETR or Ultralytics RT-DETR)."
     )
     p.add_argument(
         "--video",
@@ -284,6 +336,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local path, gs:// URI, or https:// URL to the dashcam video",
     )
     p.add_argument("--weights", type=Path, required=True)
+    p.add_argument(
+        "--backend",
+        type=str,
+        default="rfdetr",
+        choices=("rfdetr", "rtdetr"),
+        help="Detector backend (default: rfdetr)",
+    )
     p.add_argument(
         "--srt",
         type=str,
@@ -371,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         camera_pitch_deg=args.camera_pitch_deg,
         vfov_deg=args.vfov_deg,
         crf=args.crf,
+        backend=args.backend,
     )
     run_inference(cfg)
     return 0

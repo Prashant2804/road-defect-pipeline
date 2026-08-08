@@ -49,3 +49,6 @@ class InferConfig:
 
     # Encode quality (H.264 CRF; lower = sharper / larger). 23 ≈ Drive-friendly size.
     crf: int = 23
+
+    # Detector backend: "rfdetr" (Roboflow RF-DETR) or "rtdetr" (Ultralytics RT-DETR)
+    backend: str = "rfdetr"
