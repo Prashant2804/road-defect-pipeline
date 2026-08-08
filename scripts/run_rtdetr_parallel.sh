@@ -7,9 +7,12 @@
 #   ./scripts/run_rtdetr_parallel.sh
 #   # Ctrl-b d
 #
-# Defaults: rtdetr-l.pt, batch=8, workers=4, epochs=100, memory_fraction=0.45
-# If RF-DETR OOMs:  EXTRA_TRAIN_ARGS="--batch 4 --memory-fraction 0.35" ./scripts/run_rtdetr_parallel.sh
+# Defaults: rtdetr-l.pt, batch=16, workers=8, cache=ram, epochs=100, memory_fraction=0.55
+# Faster (use free VRAM + host RAM): already the defaults after git pull
+# If RF-DETR OOMs:  EXTRA_TRAIN_ARGS="--batch 8 --memory-fraction 0.40 --workers 6" ./scripts/run_rtdetr_parallel.sh
+# Aggressive:       EXTRA_TRAIN_ARGS="--batch 24 --workers 12 --memory-fraction 0.60" ./scripts/run_rtdetr_parallel.sh
 # Skip export:      SKIP_EXPORT=1 ./scripts/run_rtdetr_parallel.sh
+# Resume RT-DETR:   SKIP_EXPORT=1 EXTRA_TRAIN_ARGS="--resume" ./scripts/run_rtdetr_parallel.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

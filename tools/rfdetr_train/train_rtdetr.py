@@ -16,10 +16,11 @@ def train_rtdetr(
     model: str = "rtdetr-l.pt",
     epochs: int = 100,
     imgsz: int = 640,
-    batch: int = 8,
-    workers: int = 4,
+    batch: int = 16,
+    workers: int = 8,
     device: str = "0",
-    memory_fraction: float = 0.45,
+    memory_fraction: float = 0.55,
+    cache: str | bool = "ram",
     resume: bool = False,
 ) -> Path:
     data_yaml = Path(data_yaml)
@@ -31,6 +32,7 @@ def train_rtdetr(
         )
 
     # Soft VRAM cap so RF-DETR Large (already running) keeps headroom.
+    # 0.55 ≈ ~18GB on a 32GB card; RF-DETR Large sits at ~7GB.
     frac = max(0.15, min(float(memory_fraction), 0.85))
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     try:
@@ -55,7 +57,7 @@ def train_rtdetr(
     print(
         f"Training Ultralytics {model} → {output_dir}\n"
         f"  data={data_yaml} epochs={epochs} imgsz={imgsz} "
-        f"batch={batch} workers={workers} device={device}"
+        f"batch={batch} workers={workers} cache={cache} device={device}"
     )
     det = RTDETR(model)
     det.train(
@@ -72,6 +74,7 @@ def train_rtdetr(
         patience=0,  # match overnight full-run intent; set >0 to early-stop
         plots=True,
         save=True,
+        cache=cache,
     )
 
     best = output_dir / "weights" / "best.pt"
@@ -103,14 +106,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", type=str, default="rtdetr-l.pt")
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--batch", type=int, default=8)
-    p.add_argument("--workers", type=int, default=4)
+    p.add_argument(
+        "--batch",
+        type=int,
+        default=16,
+        help="Larger batch uses free GPU VRAM (default 16 beside RF-DETR Large)",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="DataLoader workers (CPU RAM / prefetch; default 8)",
+    )
     p.add_argument("--device", type=str, default="0")
     p.add_argument(
         "--memory-fraction",
         type=float,
-        default=0.45,
-        help="Fraction of GPU VRAM this process may use (default 0.45)",
+        default=0.55,
+        help="Fraction of GPU VRAM this process may use (default 0.55)",
+    )
+    p.add_argument(
+        "--cache",
+        type=str,
+        default="ram",
+        choices=("ram", "disk", "False", "True"),
+        help="Ultralytics image cache: ram (fast, uses host RAM), disk, or False",
     )
     p.add_argument("--resume", action="store_true")
     p.add_argument("--env", type=Path, default=None)
@@ -120,6 +140,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     load_dotenv(args.env)
+    cache: str | bool
+    if args.cache in ("False", "false", "0"):
+        cache = False
+    elif args.cache in ("True", "true", "1"):
+        cache = True
+    else:
+        cache = args.cache
     best = train_rtdetr(
         data_yaml=args.data,
         output_dir=args.output_dir,
@@ -130,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
         device=args.device,
         memory_fraction=args.memory_fraction,
+        cache=cache,
         resume=args.resume,
     )
     print("DONE", best)

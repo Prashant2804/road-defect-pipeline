@@ -626,11 +626,15 @@ tmux new -s rtdetr_stage2
 ./scripts/run_rtdetr_parallel.sh
 # Ctrl-b d
 
-# If RF-DETR OOMs: EXTRA_TRAIN_ARGS="--batch 4 --memory-fraction 0.35" ./scripts/run_rtdetr_parallel.sh
+# If RF-DETR OOMs: EXTRA_TRAIN_ARGS="--batch 8 --memory-fraction 0.40 --workers 6" ./scripts/run_rtdetr_parallel.sh
+# Faster (defaults now batch=16 workers=8 cache=ram):
+#   SKIP_EXPORT=1 EXTRA_TRAIN_ARGS="--batch 24 --workers 12 --memory-fraction 0.60" ./scripts/run_rtdetr_parallel.sh
 # Re-export skipped: SKIP_EXPORT=1 ./scripts/run_rtdetr_parallel.sh
 ```
 
 Outputs: `data/rfdetr/stage2_yolo/`, `runs/rtdetr_stage2/weights/best.pt`.
+Workers prefetch on **CPU RAM**; `--batch` / `--memory-fraction` use **GPU VRAM**;
+`--cache ram` keeps images in host RAM so the GPU stays busier.
 
 ### RF-DETR near-field inference (Phase 1)
 
