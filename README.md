@@ -608,6 +608,30 @@ tmux new -s rfdetr_stage2
 
 Outputs: `data/rfdetr/stage2/` (merged COCO), `runs/rfdetr_stage2/checkpoint_best_total.pth`.
 
+### Parallel companion: Ultralytics RT-DETR-l (same Stage-2 data)
+
+While RF-DETR Large is running (often ~7GB on a 32GB card), train **RT-DETR-l**
+on a second tmux using the rest of the GPU. Same 6-class Stage-2 merge, faster
+epochs, fair DETR-family A/B. Do **not** stop the Large job.
+
+```bash
+cd ~/road-defect-pipeline && git pull
+
+# One-time export (shared COCO → YOLO); then train in a 2nd session:
+.venv/bin/python -m tools.rfdetr_train.export_yolo \
+  --coco-dir data/rfdetr/stage2 \
+  --out-dir data/rfdetr/stage2_yolo
+
+tmux new -s rtdetr_stage2
+./scripts/run_rtdetr_parallel.sh
+# Ctrl-b d
+
+# If RF-DETR OOMs: EXTRA_TRAIN_ARGS="--batch 4 --memory-fraction 0.35" ./scripts/run_rtdetr_parallel.sh
+# Re-export skipped: SKIP_EXPORT=1 ./scripts/run_rtdetr_parallel.sh
+```
+
+Outputs: `data/rfdetr/stage2_yolo/`, `runs/rtdetr_stage2/weights/best.pt`.
+
 ### RF-DETR near-field inference (Phase 1)
 
 Standalone dashcam inference: detect only in a **near-field trapezoid** (default
