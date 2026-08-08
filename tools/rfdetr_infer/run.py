@@ -16,7 +16,7 @@ from tools.rfdetr_train.taxonomy import CLASS_NAMES
 
 from .config import InferConfig, repo_root
 from .export_out import tracks_to_rows, write_defects_csv, write_defects_json, write_summary
-from .gate import gate_boxes
+from .gate import gate_boxes, nms_boxes
 from .gps_io import load_gps
 from .map_trail import write_map_trail
 from .near_field import build_near_field
@@ -197,6 +197,9 @@ def run_inference(cfg: InferConfig) -> dict:
             dets = _predict(backend, model, frame, cfg.conf)
             boxes, cids, confs = _predictions_to_arrays(dets)
             raw_dets += len(boxes)
+            boxes, cids, confs = nms_boxes(
+                boxes, cids, confs, iou_thresh=cfg.nms_iou
+            )
             boxes, cids, confs, n_drop = gate_boxes(
                 boxes, cids, confs, nf.mask, min_overlap=cfg.min_overlap
             )
@@ -361,7 +364,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Default: runs/rfdetr_infer/<video_stem>",
     )
-    p.add_argument("--conf", type=float, default=0.15)
+    p.add_argument(
+        "--conf",
+        type=float,
+        default=0.5,
+        help="Detection confidence threshold (default 0.5)",
+    )
     p.add_argument("--stride", type=int, default=3, dest="frame_stride")
     p.add_argument("--max-frames", type=int, default=0)
     p.add_argument("--z-near", type=float, default=0.5, dest="z_near_m")
@@ -376,7 +384,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable classical color/texture road grow (often drops cracked asphalt)",
     )
-    p.add_argument("--min-overlap", type=float, default=0.15)
+    p.add_argument(
+        "--min-overlap",
+        type=float,
+        default=0.50,
+        help="Min fraction of box pixels inside assess mask (default 0.50)",
+    )
+    p.add_argument(
+        "--nms-iou",
+        type=float,
+        default=0.5,
+        dest="nms_iou",
+        help="Cross-class NMS IoU threshold (0=disable; default 0.5)",
+    )
     p.add_argument("--near-wash-alpha", type=float, default=0.28)
     p.add_argument(
         "--far-wash-alpha",
@@ -424,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         road_center_x=args.road_center_x,
         use_classical_road=args.classical_road,
         min_overlap=args.min_overlap,
+        nms_iou=args.nms_iou,
         near_wash_alpha=args.near_wash_alpha,
         far_wash_alpha=args.far_wash_alpha,
         camera_height_m=args.camera_height_m,

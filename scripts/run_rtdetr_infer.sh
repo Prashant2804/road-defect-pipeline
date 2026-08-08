@@ -7,10 +7,12 @@
 #     --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
 #     --weights runs/rtdetr_stage2/weights/best.pt \
 #     --z-far 5 \
-#     --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-rtdetr'
+#     --conf 0.5 \
+#     --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-rtdetr-v2'
 #
-# Never overwrite prior ROAD-1-Gopro / v2 / v3 POC folders — use a new --out-dir.
+# Never overwrite prior ROAD-1-Gopro / v2 / v3 / rtdetr POC folders — use a new --out-dir.
 #
+# Defaults: conf=0.5, min-overlap=0.50, nms-iou=0.5 (cross-class).
 # Optional: set GOOGLE_MAPS_API_KEY in .env for dashboard Google Maps tiles.
 set -euo pipefail
 
@@ -41,7 +43,7 @@ if [[ $# -lt 1 ]]; then
   echo "Example:" >&2
   echo "  $0 --video gs://bucket/clip.mp4 --srt gs://bucket/clip.srt \\" >&2
   echo "     --weights runs/rtdetr_stage2/weights/best.pt \\" >&2
-  echo "     --out-dir runs/rfdetr_infer/ROAD-1-Gopro-rtdetr" >&2
+  echo "     --out-dir runs/rfdetr_infer/ROAD-1-Gopro-rtdetr-v2" >&2
   exit 1
 fi
 
