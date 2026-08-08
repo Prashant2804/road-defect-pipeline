@@ -1,12 +1,12 @@
-"""Rebuild map_trail.html dashboard for an existing infer run (no re-detect)."""
+"""Build synced video+map dashboard into a NEW folder (never mutates the source run)."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 
-from .export_out import write_defects_json
 from .gps_io import load_gps, route_from_track
 from .map_trail import write_map_trail
 
@@ -58,40 +58,88 @@ def attach_gps_to_defects(rows: list[dict], gps) -> list[dict]:
     return out
 
 
+def _link_or_copy(src: Path, dst: Path, *, copy: bool) -> None:
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+    if copy:
+        print(f"  copying video {src.name} → {dst} (large)")
+        shutil.copy2(src, dst)
+        return
+    try:
+        os.symlink(src.resolve(), dst)
+        print(f"  symlinked video → {dst.name}")
+    except OSError:
+        print(f"  symlink failed; copying video {src.name}")
+        shutil.copy2(src, dst)
+
+
+def default_out_dir(run_dir: Path) -> Path:
+    """Sibling folder: runs/.../ROAD-1-Gopro-v3_dashboard"""
+    return run_dir.parent / f"{run_dir.name}_dashboard"
+
+
 def rebuild(
     run_dir: Path,
     *,
+    out_dir: Path | None = None,
     srt: Path | None = None,
     video: Path | None = None,
     maps_api_key: str | None = None,
     z_far_m: float = 5.0,
     title: str = "RF-DETR near-field defects",
+    copy_video: bool = False,
 ) -> Path:
-    run_dir = Path(run_dir)
+    """Read-only on ``run_dir``. All writes go to ``out_dir`` (new folder)."""
+    run_dir = Path(run_dir).resolve()
     if not run_dir.is_dir():
         raise SystemExit(f"Not a directory: {run_dir}")
 
+    out_dir = Path(out_dir).resolve() if out_dir else default_out_dir(run_dir)
+    if out_dir.resolve() == run_dir.resolve():
+        raise SystemExit(
+            "Refusing to write into --run-dir. Pass a different --out-dir "
+            "(default is <run-dir>_dashboard)."
+        )
+    # Never nest inside the POC folder either unless user explicitly set out_dir
+    # outside; default is sibling which is fine.
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     rows = _load_defects(run_dir)
     route: list[dict] = []
-    route_path = run_dir / "route.json"
-    if route_path.exists():
-        route = json.loads(route_path.read_text(encoding="utf-8"))
+    src_route = run_dir / "route.json"
+    if src_route.exists():
+        route = json.loads(src_route.read_text(encoding="utf-8"))
 
-    # Prefer re-parsing SRT so older GPS=no runs can be fixed
-    vid = video
+    vid = Path(video) if video else None
     if vid is None:
         cand = run_dir / "annotated.mp4"
         vid = cand if cand.exists() else None
-    gps = load_gps(vid or run_dir / "annotated.mp4", srt)
-    if gps.has_data or len(gps) >= 1:
+
+    gps = load_gps(vid or (run_dir / "annotated.mp4"), srt)
+    if len(gps) >= 1:
         route = route_from_track(gps, dt=0.5)
         rows = attach_gps_to_defects(rows, gps)
-        route_path.write_text(json.dumps(route, indent=2), encoding="utf-8")
-        write_defects_json(run_dir / "defects.json", rows)
+
+    # Write ONLY into out_dir
+    (out_dir / "defects.json").write_text(
+        json.dumps(rows, indent=2), encoding="utf-8"
+    )
+    (out_dir / "route.json").write_text(
+        json.dumps(route, indent=2), encoding="utf-8"
+    )
+    (out_dir / "source_run.txt").write_text(
+        f"Built from read-only source:\n{run_dir}\n", encoding="utf-8"
+    )
+
+    if vid is not None and vid.exists():
+        _link_or_copy(vid, out_dir / "annotated.mp4", copy=copy_video)
+    else:
+        print("WARNING: no annotated.mp4 found — HTML video panel will be empty")
 
     key = maps_api_key or os.environ.get("GOOGLE_MAPS_API_KEY")
-    out = write_map_trail(
-        run_dir / "map_trail.html",
+    html_path = write_map_trail(
+        out_dir / "index.html",
         route=route,
         defects=rows,
         title=title,
@@ -99,23 +147,39 @@ def rebuild(
         z_far_m=z_far_m,
         maps_api_key=key,
     )
+    # Friendly alias name for Drive browsers
+    shutil.copy2(html_path, out_dir / "map_dashboard.html")
+
     n_gps = sum(1 for d in rows if d.get("lat") is not None)
-    print(f"Wrote {out}")
+    print(f"Source run (unchanged): {run_dir}")
+    print(f"Dashboard folder:       {out_dir}")
     print(f"  route points: {len(route)}  defects with GPS: {n_gps}/{len(rows)}")
-    print(f"  map backend: {'Google Maps' if key else 'Leaflet (set GOOGLE_MAPS_API_KEY for Google)'}")
-    print(f"  open with a local server so video loads, e.g.:")
-    print(f"    cd {run_dir} && python3 -m http.server 8765")
-    print(f"    then visit http://localhost:8765/map_trail.html")
-    return out
+    print(
+        f"  map backend: "
+        f"{'Google Maps' if key else 'Leaflet (set GOOGLE_MAPS_API_KEY for Google)'}"
+    )
+    print("  serve:")
+    print(f"    cd {out_dir} && python3 -m http.server 8765")
+    print("    http://localhost:8765/index.html")
+    return out_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Rebuild synced video+map dashboard HTML for an existing infer run."
+        description=(
+            "Build synced video+map dashboard into a NEW folder. "
+            "Never modifies the source --run-dir (POC-safe)."
+        )
     )
-    p.add_argument("--run-dir", type=Path, required=True)
+    p.add_argument("--run-dir", type=Path, required=True, help="Existing infer run (read-only)")
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="New folder for dashboard (default: <run-dir>_dashboard sibling)",
+    )
     p.add_argument("--srt", type=Path, default=None, help="GoPro/dashcam SRT with GPS")
-    p.add_argument("--video", type=Path, default=None, help="Optional source video path")
+    p.add_argument("--video", type=Path, default=None, help="Optional annotated.mp4 path")
     p.add_argument(
         "--maps-api-key",
         type=str,
@@ -124,6 +188,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--z-far", type=float, default=5.0, dest="z_far_m")
     p.add_argument("--title", type=str, default="RF-DETR near-field defects")
+    p.add_argument(
+        "--copy-video",
+        action="store_true",
+        help="Copy annotated.mp4 into out-dir (default: symlink; use for Drive upload packs)",
+    )
     return p
 
 
@@ -131,11 +200,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     rebuild(
         args.run_dir,
+        out_dir=args.out_dir,
         srt=args.srt,
         video=args.video,
         maps_api_key=args.maps_api_key,
         z_far_m=args.z_far_m,
         title=args.title,
+        copy_video=args.copy_video,
     )
     return 0
 

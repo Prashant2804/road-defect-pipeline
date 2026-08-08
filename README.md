@@ -679,18 +679,31 @@ Outputs in `runs/rfdetr_infer/<video_stem>/`:
 | `map_trail.html` | Synced dashboard: stats + annotated video + Google Maps/Leaflet |
 | `summary.json` | Counts and run metadata |
 
-Rebuild dashboard for an existing run (add Google Maps key / fix SRT GPS without re-infer):
+Rebuild dashboard for an existing run into a **new sibling folder** (POC run stays
+untouched — no edits to annotated.mp4 / map_trail.html / defects.*):
 
 ```bash
 # In .env: GOOGLE_MAPS_API_KEY=your_key
 .venv/bin/python -m tools.rfdetr_infer.rebuild_dashboard \
   --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3' \
   --srt /path/to/gopro.SRT
+# writes → runs/rfdetr_infer/ROAD-1-Gopro-v3_dashboard/
 
-# Serve locally so annotated.mp4 loads in the browser:
-cd runs/rfdetr_infer/ROAD-1-Gopro-v3 && python3 -m http.server 8765
-# open http://localhost:8765/map_trail.html
+# Serve the NEW folder only:
+cd runs/rfdetr_infer/ROAD-1-Gopro-v3_dashboard && python3 -m http.server 8765
+# open http://localhost:8765/index.html
+
+# Upload to a NEW Drive subfolder under the existing parent (does not overwrite POC):
+./scripts/upload_infer_results.sh \
+  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3_dashboard' \
+  --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
+  --subfolder 'ROAD-1-Gopro-v3-dashboard' \
+  --dashboard \
+  --client-secret ~/secrets/drive_oauth_client.json
 ```
+
+Use `--copy-video` on rebuild if you need a fully self-contained folder (instead of a
+symlink to the POC video).
 
 Defaults: wide trapezoid (`bottom_half_w=0.78`, `top_half_w=0.50`), green wash
 inside the assess polygon (far corridor tint off), `--conf 0.15`. Classical road

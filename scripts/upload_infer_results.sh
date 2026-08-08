@@ -17,6 +17,14 @@
 #     --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
 #     --client-secret ~/secrets/drive_oauth_client.json
 #
+# === Upload dashboard pack to a NEW Drive subfolder (POC untouched) ===
+#   ./scripts/upload_infer_results.sh \
+#     --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3_dashboard' \
+#     --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
+#     --subfolder 'ROAD-1-Gopro-v3-dashboard' \
+#     --dashboard \
+#     --client-secret ~/secrets/drive_oauth_client.json
+#
 # First-time auth from a laptop (SSH tunnel so localhost redirect works):
 #   ssh -L 8090:localhost:8090 ubuntu@YOUR_VM_IP
 #   # in that session:
@@ -24,6 +32,7 @@
 # Open the printed URL in your laptop browser, approve, return to SSH.
 #
 # Uploads: annotated.mp4, defects.csv, defects.json, map_trail.html, summary.json
+# Dashboard mode: index.html, annotated.mp4, defects.json, route.json, ...
 #
 # Fallback (no API): scp the run folder to your laptop, drag into drive.google.com
 set -euo pipefail

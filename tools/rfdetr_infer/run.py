@@ -210,12 +210,15 @@ def run_inference(cfg: InferConfig) -> dict:
         json.dumps(route_samples, indent=2), encoding="utf-8"
     )
     maps_key = os.environ.get("GOOGLE_MAPS_API_KEY") or None
+    # New 3-panel dashboard lives in dashboard/ — does not replace legacy map_trail.html
+    dash_dir = out_dir / "dashboard"
+    dash_dir.mkdir(parents=True, exist_ok=True)
     write_map_trail(
-        out_dir / "map_trail.html",
+        dash_dir / "index.html",
         route=route_samples,
         defects=rows,
         title="RF-DETR near-field defects",
-        video_src="annotated.mp4",
+        video_src="../annotated.mp4",
         z_far_m=cfg.z_far_m,
         maps_api_key=maps_key,
     )
@@ -266,7 +269,7 @@ def run_inference(cfg: InferConfig) -> dict:
     print(f"\nDone in {elapsed:.1f}s → {out_dir}")
     print(f"  annotated: {annotated_path}")
     print(f"  defects:   {out_dir / 'defects.csv'} ({len(rows)} unique)")
-    print(f"  map:       {out_dir / 'map_trail.html'}")
+    print(f"  map:       {out_dir / 'dashboard' / 'index.html'}")
     return summary
 
 

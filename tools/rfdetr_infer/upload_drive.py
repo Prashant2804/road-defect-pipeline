@@ -26,6 +26,16 @@ DEFAULT_FILES = (
     "route.json",
 )
 
+# Files for the isolated dashboard pack (sibling *_dashboard folder)
+DASHBOARD_FILES = (
+    "index.html",
+    "map_dashboard.html",
+    "annotated.mp4",
+    "defects.json",
+    "route.json",
+    "source_run.txt",
+)
+
 SETUP_HELP = """
 One-time Google Cloud setup (avoids "This app is blocked" from gcloud):
 
@@ -224,6 +234,37 @@ def _find_existing(service, folder_id: str, name: str) -> str | None:
     return files[0]["id"] if files else None
 
 
+def ensure_subfolder(service, parent_id: str, name: str) -> str:
+    """Create (or reuse) a Drive subfolder under parent_id; return its id."""
+    existing = _find_existing(service, parent_id, name)
+    if existing:
+        # Confirm it is a folder
+        meta = (
+            service.files()
+            .get(fileId=existing, fields="id, mimeType, name", supportsAllDrives=True)
+            .execute()
+        )
+        if meta.get("mimeType") == "application/vnd.google-apps.folder":
+            print(f"Reusing Drive subfolder: {name} ({existing})")
+            return existing
+    print(f"Creating Drive subfolder: {name}")
+    created = (
+        service.files()
+        .create(
+            body={
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            },
+            fields="id, name, webViewLink",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    print(f"  created id={created['id']}")
+    return created["id"]
+
+
 def upload_file(service, local: Path, folder_id: str, overwrite: bool = True) -> str:
     from googleapiclient.http import MediaFileUpload
 
@@ -265,14 +306,25 @@ def upload_run(
     token_path: Path | None = None,
     service_account: Path | None = None,
     auth_port: int = 8090,
+    subfolder: str | None = None,
+    dashboard_pack: bool = False,
 ) -> None:
-    folder_id = folder_id_from_url(folder_url)
-    names = list(DEFAULT_FILES)
+    parent_id = folder_id_from_url(folder_url)
+    names = list(DASHBOARD_FILES if dashboard_pack else DEFAULT_FILES)
     if extra:
         names.extend(extra)
     files = collect_files(run_dir, tuple(dict.fromkeys(names)))
+    if not files:
+        # Fallback: upload whatever exists matching known names + any html
+        found = []
+        for p in sorted(Path(run_dir).iterdir()):
+            if p.is_file() and (
+                p.name in names or p.suffix.lower() in {".html", ".mp4", ".json", ".csv", ".txt"}
+            ):
+                found.append(p)
+        files = found
 
-    print(f"Destination folder id: {folder_id}")
+    print(f"Parent folder id: {parent_id}")
     print(f"Uploading {len(files)} file(s) from {run_dir}")
     service = _drive_service(
         client_secret=client_secret,
@@ -285,24 +337,68 @@ def upload_run(
         meta = (
             service.files()
             .get(
-                fileId=folder_id,
+                fileId=parent_id,
                 fields="id, name, mimeType",
                 supportsAllDrives=True,
             )
             .execute()
         )
-        print(f"Folder: {meta.get('name')} ({meta.get('mimeType')})")
+        print(f"Parent folder: {meta.get('name')} ({meta.get('mimeType')})")
     except Exception as e:
         raise SystemExit(
-            f"Cannot access Drive folder {folder_id}: {e}\n\n{_auth_help()}"
+            f"Cannot access Drive folder {parent_id}: {e}\n\n{_auth_help()}"
         ) from e
 
+    folder_id = parent_id
+    if subfolder:
+        folder_id = ensure_subfolder(service, parent_id, subfolder)
+
     for path in files:
-        fid = upload_file(service, path, folder_id, overwrite=overwrite)
+        # Resolve symlinks so Drive gets real video bytes
+        real = path.resolve() if path.is_symlink() else path
+        if not real.is_file():
+            print(f"  skip missing {path.name}")
+            continue
+        # Upload under the original basename (annotated.mp4 etc.)
+        if real != path:
+            fid = _upload_named(service, real, path.name, folder_id, overwrite=overwrite)
+        else:
+            fid = upload_file(service, path, folder_id, overwrite=overwrite)
         print(f"    ok id={fid}")
 
     print("\nDone.")
     print(f"Open: https://drive.google.com/drive/folders/{folder_id}")
+
+
+def _upload_named(
+    service, local: Path, name: str, folder_id: str, *, overwrite: bool = True
+) -> str:
+    """Upload file bytes from ``local`` but store as ``name`` in Drive."""
+    from googleapiclient.http import MediaFileUpload
+
+    mime, _ = mimetypes.guess_type(name)
+    mime = mime or "application/octet-stream"
+    media = MediaFileUpload(str(local), mimetype=mime, resumable=True)
+    existing = _find_existing(service, folder_id, name) if overwrite else None
+    size_mb = local.stat().st_size / (1024 * 1024)
+    if existing:
+        print(f"  updating {name} ({size_mb:.1f} MB) ...")
+        service.files().update(
+            fileId=existing, media_body=media, supportsAllDrives=True
+        ).execute()
+        return existing
+    print(f"  uploading {name} ({size_mb:.1f} MB) ...")
+    created = (
+        service.files()
+        .create(
+            body={"name": name, "parents": [folder_id]},
+            media_body=media,
+            fields="id, name",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    return created["id"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -358,6 +454,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Extra filenames inside run-dir to upload",
     )
+    p.add_argument(
+        "--subfolder",
+        type=str,
+        default=None,
+        help="Create/reuse this subfolder under --folder and upload into it "
+        "(leaves existing Drive files untouched)",
+    )
+    p.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Upload dashboard pack filenames (index.html, annotated.mp4, ...)",
+    )
     return p
 
 
@@ -376,6 +484,8 @@ def main(argv: list[str] | None = None) -> int:
         token_path=args.token,
         service_account=args.service_account,
         auth_port=args.auth_port,
+        subfolder=args.subfolder,
+        dashboard_pack=bool(args.dashboard),
     )
     return 0
 
