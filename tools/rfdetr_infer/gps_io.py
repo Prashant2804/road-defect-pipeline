@@ -81,18 +81,48 @@ except Exception:  # minimal fallback
             return float((self._cum or [0.0])[i])
 
 
-_LATLON_RE = re.compile(
-    r"(?:lat[:\s]+)(?P<lat>-?\d+\.\d+).*?(?:lon[g]?[:\s]+)(?P<lon>-?\d+\.\d+)",
-    re.IGNORECASE | re.DOTALL,
-)
 _TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->")
+
+# Multiple dashcam / GoPro / DJI SRT layouts
+_LATLON_PATTERNS = [
+    re.compile(
+        r"(?:lat(?:itude)?[:\s]+)(?P<lat>-?\d+\.\d+).*?"
+        r"(?:lon(?:gitude)?[:\s]+)(?P<lon>-?\d+\.\d+)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"GPS\s*\(\s*(?P<lat>-?\d+\.\d+)\s*,\s*(?P<lon>-?\d+\.\d+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\[latitude[:\s:]*(?P<lat>-?\d+\.\d+)\].*?\[longitude[:\s:]*(?P<lon>-?\d+\.\d+)\]",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"(?P<lat>-?\d{1,2}\.\d{4,})\s*[,/\s]\s*(?P<lon>-?\d{1,3}\.\d{4,})",
+    ),
+]
+
+
+def _parse_lat_lon(block: str) -> tuple[float, float] | None:
+    for pat in _LATLON_PATTERNS:
+        m = pat.search(block)
+        if not m:
+            continue
+        lat, lon = float(m.group("lat")), float(m.group("lon"))
+        # Sanity: reject clearly swapped / non-geo pairs
+        if abs(lat) <= 90 and abs(lon) <= 180 and not (abs(lat) < 1e-5 and abs(lon) < 1e-5):
+            return lat, lon
+    return None
 
 
 def parse_srt(path: Path) -> GpsTrack:
     try:
         from rdd.ingest.telemetry import _parse_srt  # type: ignore
 
-        return _parse_srt(path)
+        track = _parse_srt(path)
+        if len(track) >= 1:
+            return track
     except Exception:
         pass
 
@@ -101,12 +131,13 @@ def parse_srt(path: Path) -> GpsTrack:
     fixes: list[GpsFix] = []
     for b in blocks:
         m_ts = _TS_RE.search(b)
-        m_ll = _LATLON_RE.search(b)
-        if not (m_ts and m_ll):
+        ll = _parse_lat_lon(b)
+        if not (m_ts and ll):
             continue
         h, mn, s, ms = map(int, m_ts.groups())
         t = h * 3600 + mn * 60 + s + ms / 1000.0
-        fixes.append(GpsFix(t=t, lat=float(m_ll["lat"]), lon=float(m_ll["lon"])))
+        lat, lon = ll
+        fixes.append(GpsFix(t=t, lat=lat, lon=lon))
     return GpsTrack(fixes)
 
 
@@ -124,6 +155,12 @@ def load_gps(video: Path, srt: Path | None = None) -> GpsTrack:
             parent / f"{stem}.gpx",
         ]
     )
+    # Also scan sibling .srt files in the same folder (Drive downloads)
+    if parent.is_dir():
+        for p in sorted(parent.glob("*.srt")) + sorted(parent.glob("*.SRT")):
+            if p not in candidates:
+                candidates.append(p)
+
     for p in candidates:
         if not p.exists():
             continue
@@ -132,6 +169,7 @@ def load_gps(video: Path, srt: Path | None = None) -> GpsTrack:
             if len(track) >= 1:
                 print(f"GPS: loaded {len(track)} fixes from {p}")
                 return track
+            print(f"GPS: SRT present but no lat/lon parsed: {p}")
         if p.suffix.lower() == ".gpx":
             try:
                 from rdd.ingest.telemetry import _parse_gpx  # type: ignore
@@ -144,3 +182,23 @@ def load_gps(video: Path, srt: Path | None = None) -> GpsTrack:
                 print(f"GPS: failed to parse {p}: {e}")
     print("GPS: none — timestamps only (map trail will note no GPS)")
     return GpsTrack()
+
+
+def route_from_track(gps: GpsTrack, *, dt: float = 0.5) -> list[dict]:
+    """Downsample a GPS track to route points for the dashboard."""
+    if not gps.fixes:
+        return []
+    out: list[dict] = []
+    for fix in gps.fixes:
+        if out and fix.t - out[-1]["t"] < dt:
+            continue
+        chainage = gps.distance_at_time(fix.t)
+        out.append(
+            {
+                "lat": fix.lat,
+                "lon": fix.lon,
+                "t": round(float(fix.t), 3),
+                "chainage_m": None if chainage is None else round(float(chainage), 2),
+            }
+        )
+    return out

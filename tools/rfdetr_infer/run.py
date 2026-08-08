@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import time
 from collections import Counter
 from pathlib import Path
@@ -204,11 +206,18 @@ def run_inference(cfg: InferConfig) -> dict:
     rows = tracks_to_rows(all_tracks, gps)
     write_defects_csv(out_dir / "defects.csv", rows)
     write_defects_json(out_dir / "defects.json", rows)
+    (out_dir / "route.json").write_text(
+        json.dumps(route_samples, indent=2), encoding="utf-8"
+    )
+    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY") or None
     write_map_trail(
         out_dir / "map_trail.html",
         route=route_samples,
         defects=rows,
         title="RF-DETR near-field defects",
+        video_src="annotated.mp4",
+        z_far_m=cfg.z_far_m,
+        maps_api_key=maps_key,
     )
 
     elapsed = time.time() - t0

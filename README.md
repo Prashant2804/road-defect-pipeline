@@ -676,8 +676,21 @@ Outputs in `runs/rfdetr_infer/<video_stem>/`:
 |------|----------|
 | `annotated.mp4` | Near-field green wash + outline + boxes + HUD |
 | `defects.csv` / `.json` | Unique defects with `t_start/end`, lat/lon, chainage |
-| `map_trail.html` | GPS route + class-colored pins (open in a browser) |
+| `map_trail.html` | Synced dashboard: stats + annotated video + Google Maps/Leaflet |
 | `summary.json` | Counts and run metadata |
+
+Rebuild dashboard for an existing run (add Google Maps key / fix SRT GPS without re-infer):
+
+```bash
+# In .env: GOOGLE_MAPS_API_KEY=your_key
+.venv/bin/python -m tools.rfdetr_infer.rebuild_dashboard \
+  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3' \
+  --srt /path/to/gopro.SRT
+
+# Serve locally so annotated.mp4 loads in the browser:
+cd runs/rfdetr_infer/ROAD-1-Gopro-v3 && python3 -m http.server 8765
+# open http://localhost:8765/map_trail.html
+```
 
 Defaults: wide trapezoid (`bottom_half_w=0.78`, `top_half_w=0.50`), green wash
 inside the assess polygon (far corridor tint off), `--conf 0.15`. Classical road

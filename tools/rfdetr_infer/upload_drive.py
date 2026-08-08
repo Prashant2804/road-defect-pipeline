@@ -23,6 +23,7 @@ DEFAULT_FILES = (
     "defects.json",
     "map_trail.html",
     "summary.json",
+    "route.json",
 )
 
 SETUP_HELP = """
