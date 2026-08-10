@@ -50,8 +50,8 @@ class InferConfig:
     iou_match: float = 0.3
     max_age: int = 15  # strided frames without match before closing track
 
-    # Cross-class NMS (0 = disabled; RF-DETR Medium default off)
-    nms_iou: float = 0.0
+    # Cross-class NMS (0 = disabled; 0.5 collapses stacked same-patch boxes)
+    nms_iou: float = 0.5
 
     # Encode quality (H.264 CRF; lower = sharper / larger). 23 ≈ Drive-friendly size.
     crf: int = 23

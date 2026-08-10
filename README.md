@@ -742,7 +742,7 @@ tmux new -s rfdetr_infer
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5
 
-# Both-lane corridor + RF-DETR Medium recall defaults (--conf 0.15, --min-overlap 0.15):
+# Both-lane corridor + RF-DETR defaults (--conf 0.15, --min-overlap 0.15, --nms-iou 0.5):
 ./scripts/run_rfdetr_infer.sh \
   --video 'https://drive.google.com/drive/folders/FOLDER_ID' \
   --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
@@ -750,29 +750,33 @@ tmux new -s rfdetr_infer
   --z-far 5 \
   --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4'
 # Still missing shoulder: --road-top-half-w 0.55 --road-bottom-half-w 0.85 --road-center-x 0.55
-# Quieter: --conf 0.25 --min-overlap 0.25
+# Quieter / fewer overlaps: --conf 0.30 (NMS already on by default)
 ```
 
-**ROAD-1 re-run (Medium Stage-1 — new folder, POC untouched):**
+**ROAD-1 re-run (Stage-1 Medium @ conf 0.30 + NMS — new folder):**
+
+Collapses stacked same-patch boxes (`--nms-iou 0.5`) and raises conf to cut low-score duplicates. Does not overwrite `*-c020` / earlier POCs.
 
 ```bash
 cd ~/road-defect-pipeline && git pull
 ls runs/rfdetr_stage1/checkpoint_best_total.pth
 
-tmux new -s rfdetr_infer_v4
+tmux new -s rfdetr_infer_stage1_c030
 ./scripts/run_rfdetr_infer.sh \
   --video 'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
   --srt   'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5 \
-  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4'
+  --conf 0.30 \
+  --nms-iou 0.5 \
+  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-medium-stage1-c030'
 ```
 
 ```bash
 ./scripts/upload_infer_results.sh \
-  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4' \
+  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-medium-stage1-c030' \
   --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
-  --subfolder 'ROAD-1-Gopro-v4' \
+  --subfolder 'ROAD-1-Gopro-medium-stage1-c030' \
   --client-secret ~/secrets/drive_oauth_client.json
 ```
 
@@ -812,12 +816,13 @@ Use `--copy-video` on rebuild if you need a fully self-contained folder (instead
 symlink to the POC video).
 
 Defaults: wide trapezoid (`bottom_half_w=0.78`, `top_half_w=0.50`), green wash
-inside the assess polygon (far corridor tint off), RF-DETR Medium recall
-(`--conf 0.15`, `--min-overlap 0.15`, bottom-center gate, NMS off). RT-DETR via
-`run_rtdetr_infer.sh` keeps stricter gates (`conf 0.5`, `min-overlap 0.50`,
-center+clip, NMS). Classical road grow is off (it was dropping cracked asphalt).
-Note: Stage-1 taxonomy has no **rutting** class (labels were dropped at train
-time) — lowering conf helps cracks/potholes, not rutting until you retrain.
+inside the assess polygon (far corridor tint off), RF-DETR Medium recall gate
+(`--conf 0.15`, `--min-overlap 0.15`, bottom-center), plus **`--nms-iou 0.5`** to
+collapse overlapping boxes. RT-DETR via `run_rtdetr_infer.sh` keeps stricter gates
+(`conf 0.5`, `min-overlap 0.50`, center+clip, NMS). Classical road grow is off
+(it was dropping cracked asphalt). Note: Stage-1 taxonomy has no **rutting**
+class (labels were dropped at train time) — lowering conf helps cracks/potholes,
+not rutting until you retrain.
 
 Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, `--road-center-x`.
 For metric depth instead of the trapezoid proxy, pass `--camera-height-m` and

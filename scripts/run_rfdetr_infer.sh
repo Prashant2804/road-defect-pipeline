@@ -5,16 +5,18 @@
 # --video / --srt accept local paths, gs:// URIs, or https:// URLs.
 # Long videos: run inside tmux so SSH disconnects do not kill the job.
 #
-#   tmux new -s rfdetr_infer_v4
+#   tmux new -s rfdetr_infer_stage1_c030
 #   ./scripts/run_rfdetr_infer.sh \
 #     --video 'https://drive.google.com/drive/folders/FOLDER_ID' \
 #     --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
 #     --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
 #     --z-far 5 \
-#     --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4'
+#     --conf 0.30 \
+#     --nms-iou 0.5 \
+#     --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-medium-stage1-c030'
 #
-# Defaults (RF-DETR Medium recall): conf=0.15, min-overlap=0.15, nms off.
-# Never overwrite prior ROAD-1-Gopro / v2 / v3 POC folders — use a new --out-dir.
+# Defaults: conf=0.15, min-overlap=0.15, nms-iou=0.5 (collapse overlaps).
+# Never overwrite prior ROAD-1-Gopro / v2 / v3 / *-c020 POC folders — use a new --out-dir.
 #
 # Outputs under runs/rfdetr_infer/<video_stem>/ :
 #   annotated.mp4  defects.csv  defects.json  map_trail.html  summary.json

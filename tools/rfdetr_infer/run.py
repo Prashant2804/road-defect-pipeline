@@ -514,7 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         dest="nms_iou",
-        help="Cross-class NMS IoU (0=off; default: 0 rfdetr / 0.5 rtdetr)",
+        help="Cross-class NMS IoU (0=off; default 0.5 for both backends)",
     )
     p.add_argument("--near-wash-alpha", type=float, default=0.28)
     p.add_argument(
@@ -573,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         conf = 0.15 if args.conf is None else args.conf
         min_overlap = 0.15 if args.min_overlap is None else args.min_overlap
-        nms_iou = 0.0 if args.nms_iou is None else args.nms_iou
+        nms_iou = 0.5 if args.nms_iou is None else args.nms_iou
         require_center = False
         clip_to_mask = False
 
