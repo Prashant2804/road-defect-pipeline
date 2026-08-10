@@ -24,6 +24,34 @@ from .render import draw_boxes, draw_hud, draw_near_field
 from .track_simple import SimpleTracker
 
 
+def _class_names_for_model(model, backend: str) -> list[str]:
+    """Prefer names embedded in the checkpoint; fall back to repo 6-class taxonomy."""
+    candidates = []
+    for attr in ("class_names", "names", "CLASS_NAMES"):
+        if not hasattr(model, attr):
+            continue
+        val = getattr(model, attr)
+        if callable(val):
+            try:
+                val = val()
+            except TypeError:
+                continue
+        candidates.append(val)
+    # Ultralytics
+    if hasattr(model, "model") and hasattr(model.model, "names"):
+        candidates.append(model.model.names)
+
+    for val in candidates:
+        if isinstance(val, dict) and val:
+            try:
+                return [str(val[i]) for i in sorted(val)]
+            except Exception:
+                continue
+        if isinstance(val, (list, tuple)) and len(val) > 0:
+            return [str(x) for x in val]
+    return list(CLASS_NAMES)
+
+
 def _predictions_to_arrays(detections):
     """Normalize rfdetr / supervision / ultralytics outputs to numpy arrays."""
     if detections is None:
@@ -192,6 +220,8 @@ def run_inference(cfg: InferConfig) -> dict:
 
     gps = load_gps(Path(cfg.video), Path(cfg.srt) if cfg.srt else None)
     backend, model = _load_model(cfg)
+    class_names = _class_names_for_model(model, backend)
+    print(f"Class names ({len(class_names)}): {class_names}")
 
     cap = cv2.VideoCapture(str(cfg.video))
     if not cap.isOpened():
@@ -274,7 +304,7 @@ def run_inference(cfg: InferConfig) -> dict:
                 clip_to_mask=cfg.clip_to_mask,
             )
             gated_away += n_drop
-            tracker.update(boxes, cids, confs, CLASS_NAMES, frame_i, t_s)
+            tracker.update(boxes, cids, confs, class_names, frame_i, t_s)
             unique_counts = Counter(
                 tr.class_name for tr in (tracker.active + tracker.finished)
             )
@@ -286,7 +316,7 @@ def run_inference(cfg: InferConfig) -> dict:
             far_alpha=cfg.far_wash_alpha,
             near_alpha=cfg.near_wash_alpha,
         )
-        annotated = draw_boxes(annotated, boxes, cids, confs, CLASS_NAMES)
+        annotated = draw_boxes(annotated, boxes, cids, confs, class_names)
         annotated = draw_hud(
             annotated,
             counts=dict(unique_counts),
