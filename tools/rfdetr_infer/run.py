@@ -90,13 +90,24 @@ def _predictions_to_arrays(detections):
 
 def _load_model(cfg: InferConfig):
     backend = (cfg.backend or "rfdetr").lower().strip()
-    weights = Path(cfg.weights).expanduser().resolve() if cfg.weights else None
-    if weights is None or not weights.exists():
-        raise SystemExit(f"Missing weights: {cfg.weights}")
+    if cfg.weights is None or not str(cfg.weights).strip():
+        raise SystemExit(
+            "Missing --weights. Example:\n"
+            "  --weights runs/rfdetr_stage1/checkpoint_best_total.pth"
+        )
+    weights = Path(cfg.weights).expanduser()
+    if not weights.is_absolute():
+        weights = (repo_root() / weights).resolve()
+    else:
+        weights = weights.resolve()
     if weights.is_dir():
         raise SystemExit(
-            f"Weights path is a directory, expected a .pth/.pt file: {weights}"
+            f"Weights path is a directory, expected a .pth/.pt file: {weights}\n"
+            "Did --weights get an empty $WEIGHTS? Pass the file explicitly, e.g.:\n"
+            "  --weights runs/rfdetr_stage1/checkpoint_best_total.pth"
         )
+    if not weights.is_file():
+        raise SystemExit(f"Missing weights file: {weights}")
 
     if backend == "rtdetr":
         from ultralytics import RTDETR
@@ -209,11 +220,19 @@ def _predict(backend: str, model, frame_bgr: np.ndarray, conf: float):
 def run_inference(cfg: InferConfig) -> dict:
     if cfg.video is None or not Path(cfg.video).exists():
         raise SystemExit(f"Missing video: {cfg.video}")
-    if cfg.weights is None or not Path(cfg.weights).exists():
+    if cfg.weights is None or not str(cfg.weights).strip():
         raise SystemExit(
-            f"Missing weights: {cfg.weights}\n"
-            "Pass --weights runs/rtdetr_stage2/weights/best.pt  (or RF-DETR .pth)"
+            "Missing --weights. Example:\n"
+            "  --weights runs/rfdetr_stage1/checkpoint_best_total.pth"
         )
+    weights_path = Path(cfg.weights).expanduser()
+    if not weights_path.is_file():
+        # Empty Path("") resolves to cwd — catch that early
+        raise SystemExit(
+            f"Missing weights file: {cfg.weights}\n"
+            "Pass --weights runs/rfdetr_stage1/checkpoint_best_total.pth  (or RF-DETR .pth)"
+        )
+
 
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -520,6 +539,22 @@ def main(argv: list[str] | None = None) -> int:
     from .media_fetch import resolve_video_and_srt
 
     args = build_parser().parse_args(argv)
+
+    # Empty --weights "" becomes Path('.') with argparse type=Path — reject early.
+    warg = args.weights
+    if warg is None or str(warg).strip() in {"", "."}:
+        raise SystemExit(
+            "Missing/empty --weights. Use the Stage-1 Medium file explicitly:\n"
+            "  --weights runs/rfdetr_stage1/checkpoint_best_total.pth"
+        )
+    wpath = Path(warg).expanduser()
+    if not wpath.is_file():
+        raise SystemExit(
+            f"--weights is not a file: {warg}\n"
+            "Expected e.g. runs/rfdetr_stage1/checkpoint_best_total.pth"
+        )
+    args.weights = wpath.resolve()
+
     media_dir = args.media_dir or (repo_root() / "data" / "rfdetr" / "infer_media")
 
     video, srt_path = resolve_video_and_srt(args.video, args.srt, media_dir)
