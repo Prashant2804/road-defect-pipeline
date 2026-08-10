@@ -606,8 +606,10 @@ tmux new -s rfdetr_medium_50
 # Custom data: DATASET_DIR=/path/to/coco ./scripts/run_rfdetr_medium_50ep.sh
 ```
 
-Defaults: `batch=28`, `grad_accum=1`, `epochs=50`, `--no-early-stop`,
-`runs/rfdetr_medium_6class_50ep/`.
+Defaults: `batch=20`, `grad_accum=1`, `workers=4`, `epochs=50`, `--no-early-stop`,
+`runs/rfdetr_medium_6class_50ep/`. If the job dies with `Killed` (no traceback),
+that is usually host-RAM OOM from DataLoader workers — retry
+`WORKERS=2 BATCH=16 ./scripts/run_rfdetr_medium_50ep.sh`.
 
 ### RF-DETR Stage 2 (RFDETRLarge, multi-source, overnight)
 

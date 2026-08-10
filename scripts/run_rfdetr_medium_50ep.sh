@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Train RFDETRMedium for 50 epochs on the prepared 6-class COCO dataset,
-# with a large batch sized to use >20 GiB GPU VRAM (RTX 5090 32GB class).
+# with a batch sized to use substantial GPU VRAM on a 32GB card.
 #
 # Default dataset: data/rfdetr/stage2 (merged 6-class). Falls back to stage1.
 # Does NOT re-download data. Does NOT overwrite runs/rfdetr_stage1.
@@ -9,10 +9,15 @@
 #   ./scripts/run_rfdetr_medium_50ep.sh
 #   # detach: Ctrl-b d    reattach: tmux attach -t rfdetr_medium_50
 #
+# If the process dies with "Killed" (no Python traceback), that is usually the
+# Linux OOM killer (CPU RAM) from too many DataLoader workers — not CUDA OOM.
+# Retry with fewer workers first, then lower batch:
+#   WORKERS=2 BATCH=20 ./scripts/run_rfdetr_medium_50ep.sh
+#   WORKERS=2 BATCH=16 ./scripts/run_rfdetr_medium_50ep.sh
+#
 # Overrides:
 #   DATASET_DIR=data/rfdetr/stage2 ./scripts/run_rfdetr_medium_50ep.sh
-#   BATCH=32 ./scripts/run_rfdetr_medium_50ep.sh          # push VRAM harder
-#   BATCH=24 ./scripts/run_rfdetr_medium_50ep.sh          # if OOM at 28
+#   BATCH=24 WORKERS=2 ./scripts/run_rfdetr_medium_50ep.sh   # push GPU VRAM
 #   OUTPUT_DIR=runs/rfdetr_medium_6class_50ep ./scripts/run_rfdetr_medium_50ep.sh
 #   RESUME=runs/rfdetr_medium_6class_50ep/checkpoint.pth ./scripts/run_rfdetr_medium_50ep.sh
 #   EXTRA_TRAIN_ARGS="--lr 5e-5" ./scripts/run_rfdetr_medium_50ep.sh
@@ -39,13 +44,16 @@ if [[ -f "$ROOT/.env" ]]; then
 fi
 
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# Cap host-side thread fan-out (helps avoid RAM spikes with many workers).
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 
 EPOCHS="${EPOCHS:-50}"
-# Medium @ 576: batch 28 typically sits well above 20 GiB on a 32GB card.
-# Drop to 24 on OOM; raise to 32 if nvidia-smi still shows headroom.
-BATCH="${BATCH:-28}"
+# Medium + multi-scale (~736): batch 20 + few workers is the stable >~15–22 GiB
+# GPU path. Batch 28 + workers=10 was OOM-killed on host RAM during dataloader init.
+BATCH="${BATCH:-20}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
-WORKERS="${WORKERS:-10}"
+WORKERS="${WORKERS:-4}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/runs/rfdetr_medium_6class_50ep}"
 
 pick_dataset() {
@@ -84,7 +92,8 @@ echo "==> Using: $PY ($("$PY" --version 2>&1))"
 echo "==> dataset: $DATASET_DIR"
 echo "==> output:  $OUTPUT_DIR"
 echo "==> epochs=$EPOCHS batch=$BATCH grad_accum=$GRAD_ACCUM workers=$WORKERS"
-echo "==> target: use >20 GiB GPU VRAM (watch nvidia-smi during train)"
+echo "==> host RAM (free -h):"
+free -h || true
 echo "==> nvidia-smi"
 nvidia-smi || true
 
@@ -102,9 +111,24 @@ if [[ -n "${RESUME:-}" ]]; then
 fi
 
 echo ""
-echo "==> Train RFDETRMedium (50 epochs, high-VRAM batch)"
+echo "==> Train RFDETRMedium (50 epochs)"
+set +e
 # shellcheck disable=SC2086
 $PY -m tools.rfdetr_train.train "${ARGS[@]}" ${EXTRA_TRAIN_ARGS:-}
+rc=$?
+set -e
+
+if [[ $rc -ne 0 ]]; then
+  echo "" >&2
+  echo "ERROR: training exited with code $rc." >&2
+  if [[ $rc -eq 137 ]] || [[ $rc -eq 9 ]]; then
+    echo "This looks like Linux OOM-kill (host RAM), not a Python CUDA error." >&2
+    echo "Retry with fewer workers / smaller batch, e.g.:" >&2
+    echo "  WORKERS=2 BATCH=16 ./scripts/run_rfdetr_medium_50ep.sh" >&2
+  fi
+  dmesg -T 2>/dev/null | tail -n 20 | grep -i -E 'oom|killed process' >&2 || true
+  exit "$rc"
+fi
 
 echo ""
 echo "Done. Checkpoints under: $OUTPUT_DIR"
