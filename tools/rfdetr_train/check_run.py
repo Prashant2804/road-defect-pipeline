@@ -35,8 +35,20 @@ METRIC_PATTERNS = [
     ("mAP", re.compile(r"\bmAP(?:50)?(?:-95)?\b[^0-9]*([0-9]*\.?[0-9]+)", re.I)),
     ("AP50", re.compile(r"\bAP(?:50|_50)\b[^0-9]*([0-9]*\.?[0-9]+)", re.I)),
     ("AP75", re.compile(r"\bAP(?:75|_75)\b[^0-9]*([0-9]*\.?[0-9]+)", re.I)),
+    ("coco_AP", re.compile(
+        r"Average Precision\s+\(AP\)\s*@\s*\[\s*IoU=0\.50:0\.95[^\]]*\]\s*=\s*([0-9]*\.?[0-9]+)",
+        re.I,
+    )),
+    ("coco_AP50", re.compile(
+        r"Average Precision\s+\(AP\)\s*@\s*\[\s*IoU=0\.50\s*[^\]]*\]\s*=\s*([0-9]*\.?[0-9]+)",
+        re.I,
+    )),
+    ("coco_AR", re.compile(
+        r"Average Recall\s+\(AR\)\s*@\s*\[[^\]]*maxDets=100\s*\]\s*=\s*([0-9]*\.?[0-9]+)",
+        re.I,
+    )),
     ("loss", re.compile(r"\bloss\b[^0-9]*([0-9]*\.?[0-9]+)", re.I)),
-    ("epoch", re.compile(r"\bepoch\b[^0-9]*(\d+)", re.I)),
+    ("epoch", re.compile(r"\b(?:epoch|Epoch)\b[^0-9]*(\d+)", re.I)),
 ]
 
 
@@ -139,13 +151,12 @@ def scrape_metrics_from_text(text: str) -> dict[str, list]:
     return dict(hits)
 
 
-def summarize_dataset(repo: Path) -> dict:
-    stage1 = repo / "data" / "rfdetr" / "stage1"
-    out: dict = {"path": str(stage1), "exists": stage1.is_dir()}
-    if not stage1.is_dir():
+def summarize_dataset(dataset_dir: Path) -> dict:
+    out: dict = {"path": str(dataset_dir), "exists": dataset_dir.is_dir()}
+    if not dataset_dir.is_dir():
         return out
     for split in ("train", "valid", "test"):
-        ann = stage1 / split / "_annotations.coco.json"
+        ann = dataset_dir / split / "_annotations.coco.json"
         if not ann.exists():
             out[split] = None
             continue
@@ -161,12 +172,23 @@ def summarize_dataset(repo: Path) -> dict:
     return out
 
 
-def build_report(run_dir: Path, repo: Path) -> dict:
+def resolve_dataset_dir(repo: Path, dataset_dir: Path | None) -> Path:
+    if dataset_dir is not None:
+        return Path(dataset_dir)
+    stage2 = repo / "data" / "rfdetr" / "stage2"
+    stage1 = repo / "data" / "rfdetr" / "stage1"
+    if (stage2 / "train" / "_annotations.coco.json").is_file():
+        return stage2
+    return stage1
+
+
+def build_report(run_dir: Path, repo: Path, dataset_dir: Path | None = None) -> dict:
     run_dir = run_dir.resolve()
+    ds_dir = resolve_dataset_dir(repo, dataset_dir)
     report: dict = {
         "run_dir": str(run_dir),
         "exists": run_dir.is_dir(),
-        "dataset": summarize_dataset(repo),
+        "dataset": summarize_dataset(ds_dir),
         "checkpoints": [],
         "best_checkpoint": None,
         "log_files": [],
@@ -228,15 +250,15 @@ def build_report(run_dir: Path, repo: Path) -> dict:
 
 def print_report(report: dict) -> None:
     print("=" * 72)
-    print("RF-DETR Stage-1 run check")
+    print("RF-DETR run check")
     print("=" * 72)
     print(f"run_dir: {report['run_dir']}")
     print(f"exists:  {report['exists']}")
     print()
 
     ds = report.get("dataset") or {}
-    print("--- Dataset (data/rfdetr/stage1) ---")
-    print(f"path: {ds.get('path')}  exists={ds.get('exists')}")
+    print(f"--- Dataset ({ds.get('path')}) ---")
+    print(f"exists={ds.get('exists')}")
     for split in ("train", "valid", "test"):
         info = ds.get(split)
         if info is None:
@@ -244,9 +266,11 @@ def print_report(report: dict) -> None:
         elif isinstance(info, dict) and "error" in info:
             print(f"  {split}: ERROR {info['error']}")
         elif isinstance(info, dict):
+            cats = info.get("categories") or []
             print(
                 f"  {split}: {info.get('images')} images, "
-                f"{info.get('annotations')} anns"
+                f"{info.get('annotations')} anns, "
+                f"classes={cats}"
             )
     print()
 
@@ -308,12 +332,18 @@ def print_report(report: dict) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Inspect RF-DETR Stage-1 run logs and weights.")
+    p = argparse.ArgumentParser(description="Inspect RF-DETR run logs and weights.")
     p.add_argument(
         "--run-dir",
         type=Path,
         default=None,
         help="Default: <repo>/runs/rfdetr_stage1",
+    )
+    p.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=None,
+        help="COCO root to summarize (default: stage2 if present, else stage1)",
     )
     p.add_argument(
         "--json-out",
@@ -328,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repo = repo_root()
     run_dir = Path(args.run_dir) if args.run_dir else (repo / "runs" / "rfdetr_stage1")
-    report = build_report(run_dir, repo)
+    report = build_report(run_dir, repo, dataset_dir=args.dataset_dir)
     print_report(report)
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
