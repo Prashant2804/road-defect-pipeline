@@ -18,8 +18,8 @@ class InferConfig:
         default_factory=lambda: repo_root() / "runs" / "rfdetr_infer" / "latest"
     )
 
-    # Detector (0.5 cuts low-conf ravelling/edge noise seen on GoPro)
-    conf: float = 0.5
+    # Detector — RF-DETR Medium recall defaults (RT-DETR uses stricter via CLI/wrapper)
+    conf: float = 0.15
     frame_stride: int = 3
     max_frames: int = 0  # 0 = whole video
 
@@ -33,8 +33,10 @@ class InferConfig:
     road_center_x: float = 0.52  # slight right bias (vehicle often left of road center)
     # Classical grow often drops cracked / rutted asphalt — off by default for gating
     use_classical_road: bool = False
-    # Majority of box must sit in assess mask (stops tall boxes above the green band)
-    min_overlap: float = 0.50
+    # Soft gate for Medium recall; RT-DETR wrapper raises this
+    min_overlap: float = 0.15
+    require_center: bool = False
+    clip_to_mask: bool = False
     # Overlay: green wash lives in the assess polygon; far corridor tint is optional
     near_wash_alpha: float = 0.28
     far_wash_alpha: float = 0.0
@@ -48,8 +50,8 @@ class InferConfig:
     iou_match: float = 0.3
     max_age: int = 15  # strided frames without match before closing track
 
-    # Cross-class NMS (0 = disabled)
-    nms_iou: float = 0.5
+    # Cross-class NMS (0 = disabled; RF-DETR Medium default off)
+    nms_iou: float = 0.0
 
     # Encode quality (H.264 CRF; lower = sharper / larger). 23 ≈ Drive-friendly size.
     crf: int = 23

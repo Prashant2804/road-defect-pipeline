@@ -655,9 +655,9 @@ Enable **Maps JavaScript API** in Google Cloud; restrict the key (HTTP referrers
 
 **Infer ROAD-1 with `best.pt` (stricter gates — new out-dir):**
 
-Defaults: `--conf 0.5`, `--min-overlap 0.50` (box center + bottom-center in
-mask; boxes clipped to assess polygon), cross-class `--nms-iou 0.5` (set `0` to
-disable). Do not overwrite prior `ROAD-1-Gopro-rtdetr` outputs.
+`run_rtdetr_infer.sh` injects `--conf 0.5`, `--min-overlap 0.50`, `--nms-iou 0.5`
+unless you override them. Python also enables box-center-in-mask + clip for
+`--backend rtdetr`. Do not overwrite prior `ROAD-1-Gopro-rtdetr*` outputs.
 
 ```bash
 cd ~/road-defect-pipeline && git pull
@@ -669,7 +669,6 @@ tmux new -s rtdetr_infer_v2
   --srt   'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
   --weights runs/rtdetr_stage2/weights/best.pt \
   --z-far 5 \
-  --conf 0.5 \
   --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-rtdetr-v2'
 ```
 
@@ -706,15 +705,38 @@ tmux new -s rfdetr_infer
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5
 
-# Both-lane corridor + conf/gate defaults (--conf 0.5, --min-overlap 0.50, --nms-iou 0.5):
+# Both-lane corridor + RF-DETR Medium recall defaults (--conf 0.15, --min-overlap 0.15):
 ./scripts/run_rfdetr_infer.sh \
   --video 'https://drive.google.com/drive/folders/FOLDER_ID' \
   --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
   --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
   --z-far 5 \
-  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v3'
+  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4'
 # Still missing shoulder: --road-top-half-w 0.55 --road-bottom-half-w 0.85 --road-center-x 0.55
-# More recall: --conf 0.25 --min-overlap 0.25   |   quieter: --conf 0.6
+# Quieter: --conf 0.25 --min-overlap 0.25
+```
+
+**ROAD-1 re-run (Medium Stage-1 — new folder, POC untouched):**
+
+```bash
+cd ~/road-defect-pipeline && git pull
+ls runs/rfdetr_stage1/checkpoint_best_total.pth
+
+tmux new -s rfdetr_infer_v4
+./scripts/run_rfdetr_infer.sh \
+  --video 'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
+  --srt   'https://drive.google.com/drive/folders/1rhnvLoPFv87-vecmMhN-G2FJMbqYpJbj' \
+  --weights runs/rfdetr_stage1/checkpoint_best_total.pth \
+  --z-far 5 \
+  --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4'
+```
+
+```bash
+./scripts/upload_infer_results.sh \
+  --run-dir 'runs/rfdetr_infer/ROAD-1-Gopro-v4' \
+  --folder  'https://drive.google.com/drive/folders/1gFw80e4fMdL3ztDlUxVdQinNQlskpoz-' \
+  --subfolder 'ROAD-1-Gopro-v4' \
+  --client-secret ~/secrets/drive_oauth_client.json
 ```
 
 Outputs in `runs/rfdetr_infer/<video_stem>/`:
@@ -753,11 +775,12 @@ Use `--copy-video` on rebuild if you need a fully self-contained folder (instead
 symlink to the POC video).
 
 Defaults: wide trapezoid (`bottom_half_w=0.78`, `top_half_w=0.50`), green wash
-inside the assess polygon (far corridor tint off), `--conf 0.5`, `--min-overlap
-0.50` (center + bottom-center in mask; boxes clipped to assess), `--nms-iou
-0.5`. Classical road grow is off (it was dropping cracked asphalt). Note:
-Stage-1 taxonomy has no **rutting** class (labels were dropped at train time) —
-lowering conf helps cracks/potholes, not rutting until you retrain.
+inside the assess polygon (far corridor tint off), RF-DETR Medium recall
+(`--conf 0.15`, `--min-overlap 0.15`, bottom-center gate, NMS off). RT-DETR via
+`run_rtdetr_infer.sh` keeps stricter gates (`conf 0.5`, `min-overlap 0.50`,
+center+clip, NMS). Classical road grow is off (it was dropping cracked asphalt).
+Note: Stage-1 taxonomy has no **rutting** class (labels were dropped at train
+time) — lowering conf helps cracks/potholes, not rutting until you retrain.
 
 Tune the trapezoid with `--road-top-y`, `--road-bottom-half-w`, `--road-center-x`.
 For metric depth instead of the trapezoid proxy, pass `--camera-height-m` and

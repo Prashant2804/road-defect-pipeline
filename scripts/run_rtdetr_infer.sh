@@ -7,12 +7,11 @@
 #     --srt   'https://drive.google.com/drive/folders/FOLDER_ID' \
 #     --weights runs/rtdetr_stage2/weights/best.pt \
 #     --z-far 5 \
-#     --conf 0.5 \
 #     --out-dir 'runs/rfdetr_infer/ROAD-1-Gopro-rtdetr-v2'
 #
 # Never overwrite prior ROAD-1-Gopro / v2 / v3 / rtdetr POC folders — use a new --out-dir.
 #
-# Defaults: conf=0.5, min-overlap=0.50, nms-iou=0.5 (cross-class).
+# Injects strict gates unless already passed: conf=0.5, min-overlap=0.50, nms-iou=0.5.
 # Optional: set GOOGLE_MAPS_API_KEY in .env for dashboard Google Maps tiles.
 set -euo pipefail
 
@@ -47,12 +46,32 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
+# Inject strict RT-DETR defaults only when the user did not already pass them.
+USER_ARGS=("$@")
+_has() {
+  local flag="$1"
+  local a
+  for a in "${USER_ARGS[@]}"; do
+    [[ "$a" == "$flag" ]] && return 0
+  done
+  return 1
+}
+EXTRA=()
+_has --conf || EXTRA+=(--conf 0.5)
+_has --min-overlap || EXTRA+=(--min-overlap 0.50)
+_has --nms-iou || EXTRA+=(--nms-iou 0.5)
+
 echo "==> Using: $PY ($("$PY" --version 2>&1))"
 echo "==> backend=rtdetr"
+if ((${#EXTRA[@]})); then
+  echo "==> strict gates: ${EXTRA[*]}"
+else
+  echo "==> strict gates: (user-supplied)"
+fi
 if [[ -n "${GOOGLE_MAPS_API_KEY:-}" ]]; then
   echo "==> GOOGLE_MAPS_API_KEY is set (dashboard will use Google Maps)"
 else
   echo "==> GOOGLE_MAPS_API_KEY unset — dashboard falls back to Leaflet"
 fi
 
-exec "$PY" -m tools.rfdetr_infer.run --backend rtdetr "$@"
+exec "$PY" -m tools.rfdetr_infer.run --backend rtdetr "${EXTRA[@]}" "$@"

@@ -129,10 +129,10 @@ def gate_boxes(
     class_id: np.ndarray | None,
     confidence: np.ndarray | None,
     near_mask: np.ndarray,
-    min_overlap: float = 0.50,
+    min_overlap: float = 0.15,
     require_bottom_center: bool = True,
-    require_center: bool = True,
-    clip_to_mask: bool = True,
+    require_center: bool = False,
+    clip_to_mask: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, int]:
     """Return filtered (and optionally clipped) arrays and count of dropped detections."""
     if xyxy is None or len(xyxy) == 0:

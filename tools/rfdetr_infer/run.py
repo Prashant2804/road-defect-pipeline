@@ -201,7 +201,13 @@ def run_inference(cfg: InferConfig) -> dict:
                 boxes, cids, confs, iou_thresh=cfg.nms_iou
             )
             boxes, cids, confs, n_drop = gate_boxes(
-                boxes, cids, confs, nf.mask, min_overlap=cfg.min_overlap
+                boxes,
+                cids,
+                confs,
+                nf.mask,
+                min_overlap=cfg.min_overlap,
+                require_center=cfg.require_center,
+                clip_to_mask=cfg.clip_to_mask,
             )
             gated_away += n_drop
             tracker.update(boxes, cids, confs, CLASS_NAMES, frame_i, t_s)
@@ -367,8 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--conf",
         type=float,
-        default=0.5,
-        help="Detection confidence threshold (default 0.5)",
+        default=None,
+        help="Detection confidence (default: 0.15 rfdetr / 0.5 rtdetr)",
     )
     p.add_argument("--stride", type=int, default=3, dest="frame_stride")
     p.add_argument("--max-frames", type=int, default=0)
@@ -387,15 +393,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--min-overlap",
         type=float,
-        default=0.50,
-        help="Min fraction of box pixels inside assess mask (default 0.50)",
+        default=None,
+        help="Min box/mask overlap (default: 0.15 rfdetr / 0.50 rtdetr)",
     )
     p.add_argument(
         "--nms-iou",
         type=float,
-        default=0.5,
+        default=None,
         dest="nms_iou",
-        help="Cross-class NMS IoU threshold (0=disable; default 0.5)",
+        help="Cross-class NMS IoU (0=off; default: 0 rfdetr / 0.5 rtdetr)",
     )
     p.add_argument("--near-wash-alpha", type=float, default=0.28)
     p.add_argument(
@@ -427,12 +433,27 @@ def main(argv: list[str] | None = None) -> int:
     out = args.out_dir
     if out is None:
         out = repo_root() / "runs" / "rfdetr_infer" / video.stem
+
+    # Backend-aware defaults: RF-DETR Medium = recall; RT-DETR = stricter gates
+    if args.backend == "rtdetr":
+        conf = 0.5 if args.conf is None else args.conf
+        min_overlap = 0.50 if args.min_overlap is None else args.min_overlap
+        nms_iou = 0.5 if args.nms_iou is None else args.nms_iou
+        require_center = True
+        clip_to_mask = True
+    else:
+        conf = 0.15 if args.conf is None else args.conf
+        min_overlap = 0.15 if args.min_overlap is None else args.min_overlap
+        nms_iou = 0.0 if args.nms_iou is None else args.nms_iou
+        require_center = False
+        clip_to_mask = False
+
     cfg = InferConfig(
         video=video,
         weights=args.weights,
         srt=srt_path,
         out_dir=out,
-        conf=args.conf,
+        conf=conf,
         frame_stride=args.frame_stride,
         max_frames=args.max_frames,
         z_near_m=args.z_near_m,
@@ -443,8 +464,10 @@ def main(argv: list[str] | None = None) -> int:
         road_top_half_w=args.road_top_half_w,
         road_center_x=args.road_center_x,
         use_classical_road=args.classical_road,
-        min_overlap=args.min_overlap,
-        nms_iou=args.nms_iou,
+        min_overlap=min_overlap,
+        require_center=require_center,
+        clip_to_mask=clip_to_mask,
+        nms_iou=nms_iou,
         near_wash_alpha=args.near_wash_alpha,
         far_wash_alpha=args.far_wash_alpha,
         camera_height_m=args.camera_height_m,
