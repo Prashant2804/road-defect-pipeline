@@ -587,6 +587,28 @@ Or step by step:
 Optional downloads: `EXTRA_DOWNLOAD_ARGS="--bharatpothole --road-crack" ./scripts/run_stage1.sh`.
 Colab path remains `notebooks/colab_rfdetr_train.ipynb` (points here for VM use).
 
+### RF-DETR Medium on built 6-class (50 epochs, high VRAM)
+
+Train **RFDETRMedium** on the prepared 6-class COCO (`data/rfdetr/stage2` preferred,
+else `stage1`) for **50 epochs** with a large batch so the run uses **>20 GiB** GPU
+RAM on a 32GB card. Writes to a **new** run dir (does not overwrite `runs/rfdetr_stage1`).
+
+```bash
+# Data must already exist (Stage-2 merge or Stage-1 COCO):
+ls data/rfdetr/stage2/train/_annotations.coco.json
+
+tmux new -s rfdetr_medium_50
+./scripts/run_rfdetr_medium_50ep.sh
+# detach: Ctrl-b d   |  reattach: tmux attach -t rfdetr_medium_50
+
+# OOM: BATCH=24 ./scripts/run_rfdetr_medium_50ep.sh
+# More VRAM: BATCH=32 ./scripts/run_rfdetr_medium_50ep.sh
+# Custom data: DATASET_DIR=/path/to/coco ./scripts/run_rfdetr_medium_50ep.sh
+```
+
+Defaults: `batch=28`, `grad_accum=1`, `epochs=50`, `--no-early-stop`,
+`runs/rfdetr_medium_6class_50ep/`.
+
 ### RF-DETR Stage 2 (RFDETRLarge, multi-source, overnight)
 
 Stage 1 was pothole-heavy on real GoPro video. Stage 2 merges **India + rare-class**
