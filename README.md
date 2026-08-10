@@ -660,6 +660,19 @@ Outputs: `data/rfdetr/stage2_yolo/`, `runs/rtdetr_stage2/weights/best.pt`.
 Workers prefetch on **CPU RAM**; `--batch` / `--memory-fraction` use **GPU VRAM**;
 `--cache ram` keeps images in host RAM so the GPU stays busier.
 
+**Report training metrics** (precision, recall, mAP50, mAP50-95, losses):
+
+```bash
+./scripts/check_rtdetr_run.sh
+# Fresh val on best.pt + per-class breakdown:
+./scripts/check_rtdetr_run.sh --val
+# JSON dump:
+./scripts/check_rtdetr_run.sh --json-out runs/rtdetr_stage2/metrics_report.json
+```
+
+Also inspect plots under `runs/rtdetr_stage2/` (`results.png`, `confusion_matrix.png`,
+`BoxPR_curve.png`).
+
 ### RT-DETR near-field inference (test Stage-2 weights)
 
 Same near-field overlay / GPS / dashboard pipeline as RF-DETR, with `--backend rtdetr`.
