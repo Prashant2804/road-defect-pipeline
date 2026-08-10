@@ -62,9 +62,13 @@ def _predictions_to_arrays(detections):
 
 def _load_model(cfg: InferConfig):
     backend = (cfg.backend or "rfdetr").lower().strip()
-    weights = Path(cfg.weights) if cfg.weights else None
+    weights = Path(cfg.weights).expanduser().resolve() if cfg.weights else None
     if weights is None or not weights.exists():
         raise SystemExit(f"Missing weights: {cfg.weights}")
+    if weights.is_dir():
+        raise SystemExit(
+            f"Weights path is a directory, expected a .pth/.pt file: {weights}"
+        )
 
     if backend == "rtdetr":
         from ultralytics import RTDETR
@@ -76,21 +80,81 @@ def _load_model(cfg: InferConfig):
     if backend != "rfdetr":
         raise SystemExit(f"Unknown --backend {backend!r} (use rfdetr or rtdetr)")
 
-    # Prefer Large if checkpoint name suggests it; else Medium (Stage-1 default)
-    name = weights.name.lower()
+    return "rfdetr", _load_rfdetr(weights)
+
+
+def _load_rfdetr(weights: Path):
+    """Load a local RF-DETR train checkpoint for inference.
+
+    Newer rfdetr builds resolve bare/COCO names under ``~/.roboflow/models``.
+    Fine-tuned ``checkpoint_best_*.pth`` files must be loaded via
+    ``from_checkpoint(..., trust_checkpoint=True)`` (training pickles are not
+    ``weights_only``-safe).
+    """
+    w = str(weights.resolve())
+    print(f"Loading RF-DETR checkpoint: {w}")
+
+    # 1) Preferred: package-level / class from_checkpoint (auto-detects Medium/Large)
     try:
-        if "large" in name or "stage2" in str(weights).lower():
-            from rfdetr import RFDETRLarge
+        from rfdetr import from_checkpoint as rf_from_checkpoint
 
-            print(f"Loading RFDETRLarge from {weights}")
-            return "rfdetr", RFDETRLarge(pretrain_weights=str(weights))
+        try:
+            model = rf_from_checkpoint(w, trust_checkpoint=True)
+        except TypeError:
+            model = rf_from_checkpoint(w)
+        print(f"  via rfdetr.from_checkpoint → {type(model).__name__}")
+        return model
     except Exception as e:
-        print(f"RFDETRLarge load failed ({e}); falling back to Medium")
+        print(f"  rfdetr.from_checkpoint unavailable/failed ({e})")
 
-    from rfdetr import RFDETRMedium
+    # 2) Variant-specific from_checkpoint
+    name = weights.name.lower()
+    parent = str(weights.parent).lower()
+    prefer_large = ("large" in name) or (
+        "stage2" in parent and "medium" not in parent and "medium" not in name
+    )
+    variants = []
+    if prefer_large:
+        variants.append("RFDETRLarge")
+    variants.extend(["RFDETRMedium", "RFDETRLarge", "RFDETRBase", "RFDETRSmall"])
 
-    print(f"Loading RFDETRMedium from {weights}")
-    return "rfdetr", RFDETRMedium(pretrain_weights=str(weights))
+    import rfdetr as rf_mod
+
+    last_err: Exception | None = None
+    for cls_name in variants:
+        cls = getattr(rf_mod, cls_name, None)
+        if cls is None:
+            continue
+        if hasattr(cls, "from_checkpoint"):
+            try:
+                try:
+                    model = cls.from_checkpoint(w, trust_checkpoint=True)
+                except TypeError:
+                    model = cls.from_checkpoint(w)
+                print(f"  via {cls_name}.from_checkpoint")
+                return model
+            except Exception as e:
+                last_err = e
+                print(f"  {cls_name}.from_checkpoint failed: {e}")
+
+        # 3) Legacy constructor — must pass absolute file + trust_checkpoint
+        try:
+            try:
+                model = cls(pretrain_weights=w, trust_checkpoint=True)
+            except TypeError:
+                model = cls(pretrain_weights=w)
+            print(f"  via {cls_name}(pretrain_weights=..., trust_checkpoint=True)")
+            return model
+        except Exception as e:
+            last_err = e
+            print(f"  {cls_name}(pretrain_weights=...) failed: {e}")
+
+    raise SystemExit(
+        f"Could not load RF-DETR weights: {w}\n"
+        f"Last error: {last_err}\n"
+        "Ensure the file is a training checkpoint (.pth) from this repo, "
+        "not a directory under ~/.roboflow/models."
+    )
 
 
 def _predict(backend: str, model, frame_bgr: np.ndarray, conf: float):
