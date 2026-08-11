@@ -156,18 +156,71 @@ def yolo_to_coco_split(
 
 
 def _resolve_yolo_split_dirs(
-    dataset_dir: Path, rel: str
+    bases: list[Path], rel: str
 ) -> tuple[Path, Path] | tuple[None, None]:
-    p = Path(rel)
-    base = p if p.is_absolute() else (dataset_dir / rel)
-    base = base.resolve()
-    if base.name == "images" and base.is_dir():
-        lbl = base.parent / "labels"
-        return (base, lbl) if lbl.is_dir() else (base, base.parent / "labels")
-    if (base / "images").is_dir():
-        return base / "images", base / "labels"
-    if base.is_dir():
-        return base, base.parent / "labels"
+    """Resolve YOLO image/label dirs from a data.yaml path entry.
+
+    Roboflow exports often use ``../train/images`` relative to ``data.yaml``.
+    Try each base (yaml parent, unzip roots) and common layouts.
+    """
+    rel_s = str(rel).strip().replace("\\", "/")
+    candidates: list[Path] = []
+    for base in bases:
+        base = Path(base)
+        if not base.exists():
+            continue
+        candidates.append((base / rel_s).resolve())
+        # If rel is ../train/images, also try train/images under base
+        parts = [p for p in Path(rel_s).parts if p not in (".",)]
+        while parts and parts[0] == "..":
+            parts = parts[1:]
+        if parts:
+            candidates.append((base / Path(*parts)).resolve())
+            # train/images vs images
+            if parts[-1] != "images":
+                candidates.append((base / Path(*parts) / "images").resolve())
+
+    seen: set[Path] = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if cand.name == "images" and cand.is_dir():
+            lbl = cand.parent / "labels"
+            return cand, lbl
+        if cand.is_dir() and (cand / "images").is_dir():
+            return cand / "images", cand / "labels"
+        if cand.is_dir() and any(
+            p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+            for p in cand.iterdir()
+            if p.is_file()
+        ):
+            # bare image folder; labels sibling
+            return cand, cand.parent / "labels"
+    return None, None
+
+
+def _discover_yolo_split(
+    roots: list[Path], split_names: list[str]
+) -> tuple[Path, Path] | tuple[None, None]:
+    """Filesystem fallback: find <split>/images (+ labels) under unzip roots."""
+    for root in roots:
+        root = Path(root)
+        if not root.exists():
+            continue
+        for name in split_names:
+            for images in root.rglob(f"{name}/images"):
+                if not images.is_dir():
+                    continue
+                labels = images.parent / "labels"
+                return images, labels
+            # images/train layout
+            for images in root.rglob(f"images/{name}"):
+                if images.is_dir():
+                    labels = root / "labels" / name
+                    if not labels.is_dir():
+                        labels = images.parent.parent / "labels" / name
+                    return images, labels
     return None, None
 
 
@@ -190,6 +243,19 @@ def convert_yolo_dataset(dataset_dir: Path, out_dir: Path) -> Path:
     if not names:
         raise RuntimeError("data.yaml has no names")
 
+    # Search bases for ../train/images style paths
+    bases = [
+        data_yaml.parent,
+        dataset_dir,
+        data_yaml.parent.parent,
+        unwrap_zip_root(dataset_dir),
+    ]
+    # Also include top-level unzip folder if nested
+    for p in list(bases):
+        u = unwrap_zip_root(p)
+        if u not in bases:
+            bases.append(u)
+
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -205,15 +271,23 @@ def convert_yolo_dataset(dataset_dir: Path, out_dir: Path) -> Path:
             if doc.get(k):
                 rel = doc[k]
                 break
-        if not rel:
-            continue
-        img_dir, lbl_dir = _resolve_yolo_split_dirs(dataset_dir, str(rel))
+        img_dir = lbl_dir = None
+        if rel:
+            img_dir, lbl_dir = _resolve_yolo_split_dirs(bases, str(rel))
+            if img_dir is None:
+                print(f"  YOLO {out_split}: yaml path not found for {rel!r} — scanning tree")
         if img_dir is None:
-            print(f"  YOLO {out_split}: path not found for {rel}")
+            img_dir, lbl_dir = _discover_yolo_split(bases, keys)
+        if img_dir is None:
+            print(f"  YOLO {out_split}: path not found for {rel or keys}")
             continue
+        if lbl_dir is None or not Path(lbl_dir).is_dir():
+            # still try conversion; may be image-only
+            lbl_dir = Path(img_dir).parent / "labels"
+        print(f"  YOLO {out_split}: images={img_dir}  labels={lbl_dir}")
         n = yolo_to_coco_split(
-            img_dir,
-            lbl_dir,
+            Path(img_dir),
+            Path(lbl_dir),
             names,
             out_dir / out_split / "_annotations.coco.json",
             out_dir / out_split,
@@ -221,7 +295,24 @@ def convert_yolo_dataset(dataset_dir: Path, out_dir: Path) -> Path:
         print(f"  YOLO {out_split}: {n} images -> {out_dir / out_split}")
 
     if not (out_dir / "train" / "_annotations.coco.json").exists():
-        raise RuntimeError("YOLO conversion produced no train split")
+        # Last resort: any train/images under dataset_dir tree
+        img_dir, lbl_dir = _discover_yolo_split([dataset_dir, *bases], ["train"])
+        if img_dir is not None:
+            print(f"  YOLO train (last resort): images={img_dir}")
+            n = yolo_to_coco_split(
+                Path(img_dir),
+                Path(lbl_dir or (Path(img_dir).parent / "labels")),
+                names,
+                out_dir / "train" / "_annotations.coco.json",
+                out_dir / "train",
+            )
+            print(f"  YOLO train: {n} images -> {out_dir / 'train'}")
+    if not (out_dir / "train" / "_annotations.coco.json").exists():
+        raise RuntimeError(
+            "YOLO conversion produced no train split. "
+            f"Checked data.yaml={data_yaml} names={names} "
+            f"keys train/val={doc.get('train')!r}/{doc.get('val') or doc.get('valid')!r}"
+        )
     return out_dir
 
 

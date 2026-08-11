@@ -177,7 +177,12 @@ def download_drive_file(url: str, dest: Path) -> Path:
         print(f"  Drive file cache hit: {dest}")
         return dest
     print(f"  Downloading Google Drive file {fid} → {dest}")
-    _run_gdown([url, "-O", str(dest), "--fuzzy"])
+    # Prefer uc?id= (works on older gdown). Avoid --fuzzy — many builds reject it.
+    direct = f"https://drive.google.com/uc?id={fid}"
+    try:
+        _run_gdown([direct, "-O", str(dest)])
+    except Exception:
+        _run_gdown([url, "-O", str(dest)])
     if not dest.exists() or dest.stat().st_size == 0:
         raise RuntimeError(
             f"Drive file download failed/empty: {dest}. "
