@@ -34,7 +34,10 @@ class Stage1Config:
     lr: float = 1e-4
     num_workers: int = 8
     early_stopping: bool = True
+    early_stopping_patience: int = 10
     resume: str | None = None
+    # Optional Albumentations preset name (see augmentations.AUG_PRESETS); None = rfdetr default
+    aug_preset: str | None = None
 
     @property
     def raw_dir(self) -> Path:

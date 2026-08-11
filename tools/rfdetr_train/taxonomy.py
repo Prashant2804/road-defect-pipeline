@@ -22,6 +22,11 @@ CLASS_ALIASES: dict[str, str | None] = {
     "longitudinal_crack": "longitudinal_crack",
     "longitudinal cracking": "longitudinal_crack",
     "longitudinal-crack": "longitudinal_crack",
+    "longitudinal transverse cracks": "longitudinal_crack",
+    "longitudinal transverse crack": "longitudinal_crack",
+    "longitudinal and transverse cracks": "longitudinal_crack",
+    "longitudinal/transverse cracks": "longitudinal_crack",
+    "longitudinal / transverse cracks": "longitudinal_crack",
     "lateral-crack": "longitudinal_crack",
     "lateral crack": "longitudinal_crack",
     "transverse crack": "longitudinal_crack",
@@ -32,6 +37,10 @@ CLASS_ALIASES: dict[str, str | None] = {
     "alligator crack": "alligator_crack",
     "alligator_crack": "alligator_crack",
     "alligator cracking": "alligator_crack",
+    "alligator and fatigue cracking": "alligator_crack",
+    "alligator & fatigue cracking": "alligator_crack",
+    "alligator fatigue cracking": "alligator_crack",
+    "fatigue cracking": "alligator_crack",
     "alligator": "alligator_crack",
     "fatigue crack": "alligator_crack",
     "reticular crack": "alligator_crack",
@@ -79,6 +88,7 @@ CLASS_ALIASES: dict[str, str | None] = {
     "lane shoulder drop-off": "edge_damage",
     "shoulder drop-off": "edge_damage",
     "shoulder erosion": "edge_damage",
+    "shoulder_erosion": "edge_damage",
     "drainage_issue": "drainage_issue",
     "drainage issue": "drainage_issue",
     "drainage": "drainage_issue",
@@ -118,6 +128,12 @@ CLASS_ALIASES: dict[str, str | None] = {
     "slippage": None,
     "looseness": None,
     "uncertain": None,
+    "null": None,
+    "none": None,
+    "n/a": None,
+    "na": None,
+    "background": None,
+    "empty": None,
 }
 
 
@@ -145,6 +161,7 @@ def resolve_class(name: str) -> str | None:
         return CLASS_ALIASES[snake]
     for needle, dest in (
         ("alligator", "alligator_crack"),
+        ("fatigue", "alligator_crack"),
         ("ravelling", "ravelling"),
         ("raveling", "ravelling"),
         ("rutting", "ravelling"),
@@ -165,6 +182,8 @@ def resolve_class(name: str) -> str | None:
     ):
         if needle in key:
             return dest
+    if key in {"null", "none", "n/a", "na", "background", "empty"}:
+        return None
     return None
 
 

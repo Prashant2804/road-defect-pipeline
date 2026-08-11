@@ -97,6 +97,8 @@ def train_stage1(cfg: Stage1Config) -> Path:
     )
     if cfg.resume:
         print(f"resume={cfg.resume}")
+    if cfg.aug_preset:
+        print(f"aug_preset={cfg.aug_preset}")
 
     model_kwargs: dict = {}
     if cfg.resume:
@@ -120,8 +122,16 @@ def train_stage1(cfg: Stage1Config) -> Path:
     )
     if cfg.early_stopping:
         train_kwargs["early_stopping"] = True
+        train_kwargs["early_stopping_patience"] = cfg.early_stopping_patience
     if cfg.resume and "resume" not in train_kwargs:
         train_kwargs["resume"] = str(cfg.resume)
+    if cfg.aug_preset:
+        from .augmentations import get_aug_preset
+
+        aug_config = get_aug_preset(cfg.aug_preset)
+        if aug_config:
+            train_kwargs["aug_config"] = aug_config
+            train_kwargs["augmentation_backend"] = "albumentations"
 
     train_kwargs = _filter_kwargs(model.train, train_kwargs)
 
@@ -130,7 +140,14 @@ def train_stage1(cfg: Stage1Config) -> Path:
         model.train(**train_kwargs)
     except TypeError as e:
         print("Retrying with reduced kwargs after TypeError:", e)
-        for drop in ("early_stopping", "num_workers", "resume"):
+        for drop in (
+            "early_stopping",
+            "early_stopping_patience",
+            "num_workers",
+            "resume",
+            "aug_config",
+            "augmentation_backend",
+        ):
             train_kwargs.pop(drop, None)
         train_kwargs = _filter_kwargs(model.train, train_kwargs)
         model.train(**train_kwargs)
@@ -157,6 +174,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--workers", type=int, default=None, dest="num_workers")
     p.add_argument("--no-early-stop", action="store_true")
+    p.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help="Epochs without val improvement before stop (default 10)",
+    )
+    p.add_argument(
+        "--aug-preset",
+        type=str,
+        default=None,
+        help="Albumentations preset: custom_road | stress_light | none",
+    )
     p.add_argument(
         "--resume",
         type=str,
@@ -185,7 +214,13 @@ def config_from_args(args: argparse.Namespace) -> Stage1Config:
             args.num_workers if args.num_workers is not None else base.num_workers
         ),
         early_stopping=not args.no_early_stop,
+        early_stopping_patience=(
+            args.early_stopping_patience
+            if args.early_stopping_patience is not None
+            else base.early_stopping_patience
+        ),
         resume=args.resume or os.environ.get("RFDETR_RESUME") or None,
+        aug_preset=args.aug_preset,
     )
 
 

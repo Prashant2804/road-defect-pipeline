@@ -611,6 +611,35 @@ Defaults: `batch=20`, `grad_accum=1`, `workers=4`, `epochs=50`, `--no-early-stop
 that is usually host-RAM OOM from DataLoader workers — retry
 `WORKERS=2 BATCH=16 ./scripts/run_rfdetr_medium_50ep.sh`.
 
+### Custom Stage-2 Medium (your Drive zips, anti-overfit)
+
+Fine-tune **RFDETRMedium** from the working Stage-1 checkpoint on your own ~2400
+images (2 Drive zips). **Does not overwrite** Stage-1 weights, Stage-2 corpora, or
+any `ROAD-1-Gopro*` infer folders — writes only under `data/rfdetr/custom_*` and
+`runs/rfdetr_medium_custom_stage2/`.
+
+**Anti-overfit:** warm-start + `lr=1e-5`, early stopping (patience 10), clean
+val/test for metrics, train-only enrichment with five aug families (brightness,
+blur, coarse dropout / block, horizontal flip, HSV+noise) offline (~2× train) and
+online via `--aug-preset custom_road`. Light stress copies of val/test go to
+`data/rfdetr/custom_stage2_stress/` (qualitative only).
+
+Share both Drive files as **Anyone with the link**, then:
+
+```bash
+cd ~/road-defect-pipeline && git pull
+ls runs/rfdetr_stage1/checkpoint_best_total.pth
+
+tmux new -s rfdetr_custom_s2
+./scripts/run_custom_stage2_medium.sh
+# OOM: BATCH=16 WORKERS=2 ./scripts/run_custom_stage2_medium.sh
+# Reuse zips: SKIP_DOWNLOAD=1 ./scripts/run_custom_stage2_medium.sh
+```
+
+Default Drive file IDs are baked into `tools/rfdetr_train/prepare_custom_stage2.py`.
+Outputs: `data/rfdetr/custom_stage2/` (clean), `data/rfdetr/custom_stage2_aug/`
+(train+aug), `runs/rfdetr_medium_custom_stage2/checkpoint_best_*.pth`.
+
 ### RF-DETR Stage 2 (RFDETRLarge, multi-source, overnight)
 
 Stage 1 was pothole-heavy on real GoPro video. Stage 2 merges **India + rare-class**
