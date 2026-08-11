@@ -10,7 +10,9 @@
 #   ./scripts/run_custom_stage2_medium.sh
 #
 # Drive zips must be shared as "Anyone with the link".
-# OOM: BATCH=16 WORKERS=2 ./scripts/run_custom_stage2_medium.sh
+# Defaults push a 32GB card: batch=28 workers=8.
+# GPU OOM:   BATCH=24 WORKERS=8 ./scripts/run_custom_stage2_medium.sh
+# Host OOM:  BATCH=20 WORKERS=4 ./scripts/run_custom_stage2_medium.sh
 # Reuse downloaded zips: SKIP_DOWNLOAD=1 ./scripts/run_custom_stage2_medium.sh
 set -euo pipefail
 
@@ -40,10 +42,14 @@ INIT_WEIGHTS="${INIT_WEIGHTS:-$ROOT/runs/rfdetr_stage1/checkpoint_best_total.pth
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/runs/rfdetr_medium_custom_stage2}"
 DATASET_DIR="${DATASET_DIR:-$ROOT/data/rfdetr/custom_stage2_aug}"
 EPOCHS="${EPOCHS:-50}"
-BATCH="${BATCH:-20}"
-WORKERS="${WORKERS:-4}"
+# Medium @ ~576 on 32GB: batch 28 fills most of the card; workers 8 keeps GPU fed
+# without the host-RAM kill seen at workers≈10.
+BATCH="${BATCH:-28}"
+WORKERS="${WORKERS:-8}"
 LR="${LR:-1e-5}"
 AUG_PRESET="${AUG_PRESET:-custom_road}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 
 assert_safe_output() {
   local out="$1"
