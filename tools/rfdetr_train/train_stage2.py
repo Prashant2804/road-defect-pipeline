@@ -34,15 +34,32 @@ def train_stage2(cfg: Stage2Config) -> Path:
         f"(effective batch {cfg.effective_batch})"
     )
     if cfg.resume:
-        print(f"resume={cfg.resume}")
+        print(f"resume (full trainer state)={cfg.resume}")
+    if cfg.pretrain_weights:
+        print(f"pretrain_weights (weights only)={cfg.pretrain_weights}")
+
+    if cfg.resume and cfg.pretrain_weights:
+        raise SystemExit(
+            "Pass only one of --resume or --pretrain-weights."
+        )
 
     model_kwargs: dict = {}
-    if cfg.resume:
+    init_w = cfg.pretrain_weights or None
+    if init_w:
+        try:
+            model = RFDETRLarge(pretrain_weights=str(init_w))
+        except TypeError:
+            model = RFDETRLarge()
+            print(
+                "WARNING: RFDETRLarge(pretrain_weights=...) unsupported; "
+                "training may start from scratch unless --resume is used."
+            )
+    elif cfg.resume:
         try:
             model = RFDETRLarge(pretrain_weights=str(cfg.resume))
         except TypeError:
             model = RFDETRLarge()
-            model_kwargs["resume"] = str(cfg.resume)
+        model_kwargs["resume"] = str(cfg.resume)
     else:
         model = RFDETRLarge()
 
@@ -106,7 +123,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable early stopping (off by default for full overnight 100ep)",
     )
-    p.add_argument("--resume", type=str, default=None)
+    p.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Full trainer resume (same run). Not for cross-run fine-tune.",
+    )
+    p.add_argument(
+        "--pretrain-weights",
+        type=str,
+        default=None,
+        help="Weights-only warm-start (new run from epoch 0).",
+    )
     p.add_argument("--env", type=Path, default=None)
     return p
 
@@ -130,6 +158,11 @@ def config_from_args(args: argparse.Namespace) -> Stage2Config:
         ),
         early_stopping=bool(args.early_stop),
         resume=args.resume or os.environ.get("RFDETR_RESUME") or None,
+        pretrain_weights=(
+            args.pretrain_weights
+            or os.environ.get("RFDETR_PRETRAIN_WEIGHTS")
+            or None
+        ),
     )
 
 

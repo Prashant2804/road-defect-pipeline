@@ -96,17 +96,40 @@ def train_stage1(cfg: Stage1Config) -> Path:
         f"(effective batch {cfg.effective_batch})"
     )
     if cfg.resume:
-        print(f"resume={cfg.resume}")
+        print(f"resume (full trainer state)={cfg.resume}")
+    if cfg.pretrain_weights:
+        print(f"pretrain_weights (weights only)={cfg.pretrain_weights}")
     if cfg.aug_preset:
         print(f"aug_preset={cfg.aug_preset}")
 
+    if cfg.resume and cfg.pretrain_weights:
+        raise SystemExit(
+            "Pass only one of --resume (continue same run) or "
+            "--pretrain-weights (warm-start new run). "
+            "Using --resume on a finished Stage-1 ckpt with epochs<=50 exits immediately."
+        )
+
+    # Weights-only init: never pass resume into model.train() or Lightning restores
+    # the source run's epoch and can hit max_epochs before any training step.
     model_kwargs: dict = {}
-    if cfg.resume:
+    init_w = cfg.pretrain_weights or None
+    if init_w:
+        try:
+            model = RFDETRMedium(pretrain_weights=str(init_w))
+        except TypeError:
+            model = RFDETRMedium()
+            print(
+                "WARNING: RFDETRMedium(pretrain_weights=...) unsupported; "
+                "training may start from scratch unless --resume is used."
+            )
+    elif cfg.resume:
+        # True resume: restore optimizer/epoch via train(resume=...).
+        # Also try weight load so the model object is initialized.
         try:
             model = RFDETRMedium(pretrain_weights=str(cfg.resume))
         except TypeError:
             model = RFDETRMedium()
-            model_kwargs["resume"] = str(cfg.resume)
+        model_kwargs["resume"] = str(cfg.resume)
     else:
         model = RFDETRMedium()
 
@@ -123,6 +146,7 @@ def train_stage1(cfg: Stage1Config) -> Path:
     if cfg.early_stopping:
         train_kwargs["early_stopping"] = True
         train_kwargs["early_stopping_patience"] = cfg.early_stopping_patience
+    # Only full --resume goes into train(); pretrain_weights must not.
     if cfg.resume and "resume" not in train_kwargs:
         train_kwargs["resume"] = str(cfg.resume)
     if cfg.aug_preset:
@@ -190,7 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         type=str,
         default=None,
-        help="Path to checkpoint.pth (or best) to continue / warm-start",
+        help="Full trainer resume (same run: epoch/optimizer). Not for cross-run fine-tune.",
+    )
+    p.add_argument(
+        "--pretrain-weights",
+        type=str,
+        default=None,
+        help="Weights-only warm-start (new run from epoch 0). Use for Stage-1 → fine-tune.",
     )
     p.add_argument("--env", type=Path, default=None)
     return p
@@ -220,6 +250,11 @@ def config_from_args(args: argparse.Namespace) -> Stage1Config:
             else base.early_stopping_patience
         ),
         resume=args.resume or os.environ.get("RFDETR_RESUME") or None,
+        pretrain_weights=(
+            args.pretrain_weights
+            or os.environ.get("RFDETR_PRETRAIN_WEIGHTS")
+            or None
+        ),
         aug_preset=args.aug_preset,
     )
 

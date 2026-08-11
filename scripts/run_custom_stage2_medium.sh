@@ -108,10 +108,18 @@ fi
 
 echo ""
 echo "==> Fine-tune RFDETRMedium (anti-overfit: low LR + early stop + augs)"
+echo "    warm-start via --pretrain-weights (NOT --resume; resume restores epoch and can exit at once)"
+# Drop instant-fail artifacts from a prior --resume warm-start mistake
+if [[ "${CLEAN_OUTPUT:-1}" == "1" ]]; then
+  if [[ -d "$OUTPUT_DIR" ]]; then
+    echo "    clearing stale *.pth under $OUTPUT_DIR (CLEAN_OUTPUT=1)"
+    rm -f "$OUTPUT_DIR"/*.pth
+  fi
+fi
 "$PY" -m tools.rfdetr_train.train \
   --dataset-dir "$DATASET_DIR" \
   --output-dir "$OUTPUT_DIR" \
-  --resume "$INIT_WEIGHTS" \
+  --pretrain-weights "$INIT_WEIGHTS" \
   --epochs "$EPOCHS" \
   --batch "$BATCH" \
   --workers "$WORKERS" \

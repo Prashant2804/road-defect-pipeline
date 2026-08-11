@@ -35,7 +35,10 @@ class Stage1Config:
     num_workers: int = 8
     early_stopping: bool = True
     early_stopping_patience: int = 10
+    # Full Lightning resume (optimizer + epoch). Do NOT use for cross-run fine-tune.
     resume: str | None = None
+    # Weights-only warm-start (new run starts at epoch 0). Use for Stage-1 → custom Stage-2.
+    pretrain_weights: str | None = None
     # Optional Albumentations preset name (see augmentations.AUG_PRESETS); None = rfdetr default
     aug_preset: str | None = None
 
@@ -100,6 +103,7 @@ class Stage2Config:
     num_workers: int = 8
     early_stopping: bool = False  # full 100-epoch overnight by default
     resume: str | None = None
+    pretrain_weights: str | None = None
 
     @property
     def raw_dir(self) -> Path:
