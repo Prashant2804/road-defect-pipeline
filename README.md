@@ -632,7 +632,7 @@ ls runs/rfdetr_stage1/checkpoint_best_total.pth
 
 tmux new -s rfdetr_custom_s2
 ./scripts/run_custom_stage2_medium.sh
-# OOM: BATCH=16 WORKERS=2 ./scripts/run_custom_stage2_medium.sh
+# Defaults: batch=28 workers=8 (32GB). GPU OOM → BATCH=24; host OOM → BATCH=20 WORKERS=4
 # Reuse zips: SKIP_DOWNLOAD=1 ./scripts/run_custom_stage2_medium.sh
 ```
 
