@@ -114,16 +114,23 @@ def _run_gdown(args: list[str]) -> None:
     raise last_err
 
 
-def find_video_in_dir(root: Path) -> Path | None:
+def find_videos_in_dir(root: Path) -> list[Path]:
+    """All video files under root (stable name order)."""
     cands = [
         p
         for p in root.rglob("*")
         if p.is_file() and p.suffix.lower() in _VIDEO_EXTS
     ]
+    cands.sort(key=lambda p: p.as_posix().lower())
+    return cands
+
+
+def find_video_in_dir(root: Path) -> Path | None:
+    cands = find_videos_in_dir(root)
     if not cands:
         return None
-    cands.sort(key=lambda p: p.stat().st_size, reverse=True)
-    return cands[0]
+    # Prefer largest (historical single-video behavior)
+    return max(cands, key=lambda p: p.stat().st_size)
 
 
 def find_srt_in_dir(root: Path, prefer_stem: str | None = None) -> Path | None:
