@@ -48,7 +48,7 @@ else
   PY="${PYTHON:-python3}"
 fi
 
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 "$PY" -m pip install -q \
   google-api-python-client \

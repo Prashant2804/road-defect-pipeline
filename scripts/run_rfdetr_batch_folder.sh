@@ -19,7 +19,7 @@ else
   PY="${PYTHON:-python3}"
 fi
 
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "==> Using: $PY ($("$PY" --version 2>&1))"
 echo "==> Batch Stage-2 Medium (conf 0.30, extended ROI)"

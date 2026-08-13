@@ -33,7 +33,7 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 "$PY" -m pip install -q "ultralytics>=8.3.0"
 

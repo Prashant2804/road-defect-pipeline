@@ -1,3 +1,7 @@
+# Local package (src/rdd) — install with:  pip install -r requirements.txt
+# This is not on PyPI; `-e .` editable-installs this repo so `import rdd` works.
+-e .
+
 # Core pipeline ------------------------------------------------------------
 ultralytics>=8.3.0          # YOLO26/YOLO11 seg + SAM + built-in trackers
 lap>=0.5.12                 # linear assignment — REQUIRED by BoT-SORT/ByteTrack

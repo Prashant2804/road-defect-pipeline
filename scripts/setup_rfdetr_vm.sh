@@ -61,6 +61,9 @@ source "$VENV/bin/activate"
   "google-auth-httplib2>=0.2" \
   "google-auth-oauthlib>=1.0"
 
+# Local `rdd` package (src/rdd) so infer can `import rdd.geometry`
+"$PY" -m pip install -e "$ROOT"
+
 echo ""
 echo "==> Verifying imports"
 "$PY" - <<'PY'

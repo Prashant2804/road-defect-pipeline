@@ -23,7 +23,7 @@ else
   PY="${PYTHON:-python3}"
 fi
 
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "==> Using: $PY ($("$PY" --version 2>&1))"
 echo "==> Extended ROI infer (road_top_y=0.32 z_far=8 conf=0.30)"

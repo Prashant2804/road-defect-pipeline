@@ -36,7 +36,7 @@ else
   PY="${PYTHON:-python3}"
 fi
 
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 --video PATH_OR_URL --weights PATH [--srt PATH_OR_URL] [--z-far 5] ..." >&2
