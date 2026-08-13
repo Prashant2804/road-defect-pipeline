@@ -44,7 +44,20 @@ class InferConfig:
     # Optional metric camera (metres). If unset, trapezoid top is the far edge.
     camera_height_m: float | None = None
     camera_pitch_deg: float | None = None
+    camera_yaw_deg: float = 0.0
     vfov_deg: float | None = None
+    h_fov_deg: float | None = None
+    camera_fx: float | None = None
+    camera_fy: float | None = None
+    camera_json: Path | None = None
+    k1: float = 0.0
+    k2: float = 0.0
+
+    # Defect area: SAM-2 box prompt on the nearest frame of each unique track.
+    measure_area: bool = True
+    use_sam: bool = True
+    sam_model: str = "sam2.1_b.pt"
+    area_qa: bool = True
 
     # Tracker
     iou_match: float = 0.3

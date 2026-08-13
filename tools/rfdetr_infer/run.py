@@ -15,6 +15,14 @@ from PIL import Image
 from tools.rfdetr_train.taxonomy import CLASS_NAMES
 
 from .config import InferConfig, repo_root
+from .camera import (
+    apply_camera_json,
+    area_map_m2,
+    camera_from_infer_cfg,
+    check_gsd_with_speed,
+    load_camera_json,
+    undistort_maps,
+)
 from .export_out import tracks_to_rows, write_defects_csv, write_defects_json, write_summary
 from .gate import gate_boxes, nms_boxes
 from .gps_io import load_gps
@@ -238,6 +246,8 @@ def run_inference(cfg: InferConfig) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     gps = load_gps(Path(cfg.video), Path(cfg.srt) if cfg.srt else None)
+    if cfg.camera_json:
+        apply_camera_json(cfg, load_camera_json(Path(cfg.camera_json)))
     backend, model = _load_model(cfg)
     class_names = _class_names_for_model(model, backend)
     print(f"Class names ({len(class_names)}): {class_names}")
@@ -250,6 +260,32 @@ def run_inference(cfg: InferConfig) -> dict:
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+    cam_model = camera_from_infer_cfg(cfg, w, h)
+    area_map = area_map_m2(cam_model) if cam_model is not None else None
+    if cam_model is not None:
+        print(f"Camera: {cam_model.describe()}")
+        if cfg.vfov_deg is None:
+            cfg.vfov_deg = cam_model.intr.v_fov_deg
+        if cfg.camera_pitch_deg is None:
+            cfg.camera_pitch_deg = cam_model.extr.pitch_deg
+    elif cfg.measure_area:
+        print(
+            "No --camera-height-m / --camera-json — SAM masks still run, "
+            "but area_m2 stays empty until you measure the mount."
+        )
+
+    undist = None
+    hfov_u = cfg.h_fov_deg
+    if hfov_u is None and cam_model is not None:
+        hfov_u = cam_model.intr.h_fov_deg
+    if abs(cfg.k1) > 1e-9 or abs(cfg.k2) > 1e-9:
+        undist = undistort_maps(
+            w, h, h_fov_deg=float(hfov_u or 86.0), k1=cfg.k1, k2=cfg.k2
+        )
+        print(f"Undistort enabled k1={cfg.k1} k2={cfg.k2}")
+
+    gsd_frames: list = []
 
     annotated_path = out_dir / "annotated.mp4"
     # Proven full-length path: OpenCV mp4v during infer, then H.264 CRF compress.
@@ -304,6 +340,11 @@ def run_inference(cfg: InferConfig) -> dict:
         cids = None
         confs = None
 
+        if undist is not None:
+            from .camera import remap_frame
+
+            frame = remap_frame(frame, undist[0], undist[1])
+
         nf = build_near_field(frame, cfg)
 
         if do_detect:
@@ -328,6 +369,8 @@ def run_inference(cfg: InferConfig) -> dict:
                 tr.class_name for tr in (tracker.active + tracker.finished)
             )
             processed += 1
+            if len(gsd_frames) < 2:
+                gsd_frames.append(frame.copy())
 
         annotated = draw_near_field(
             frame,
@@ -371,7 +414,41 @@ def run_inference(cfg: InferConfig) -> dict:
         )
 
     all_tracks = tracker.flush()
-    rows = tracks_to_rows(all_tracks, gps)
+
+    gsd_check = None
+    if cam_model is not None:
+        z_chk = min(max(cfg.z_near_m + 0.5, 3.0), cfg.z_far_m)
+        gsd_check = check_gsd_with_speed(
+            cam_model, gsd_frames, gps, fps, z_m=z_chk
+        )
+        print(f"GSD check: {gsd_check.note}")
+
+    meas_by_id: dict = {}
+    if cfg.measure_area and all_tracks:
+        from .sam_area import load_segmenter, measure_tracks_on_video
+
+        segmenter, src = load_segmenter(cfg.sam_model, use_sam=cfg.use_sam)
+        qa = (out_dir / "area_qa") if cfg.area_qa else None
+        print(
+            f"Measuring area on {len(all_tracks)} tracks "
+            f"(source={src}, scale={'yes' if area_map is not None else 'no'})"
+        )
+        measurements = measure_tracks_on_video(
+            Path(cfg.video),
+            all_tracks,
+            cfg,
+            area_map,
+            segmenter,
+            src,
+            qa_dir=qa,
+            undistort=undist,
+        )
+        meas_by_id = {m.defect_id: m.as_dict() for m in measurements}
+        n_m2 = sum(1 for m in measurements if m.area_m2 is not None)
+        print(f"  area_m2 on {n_m2}/{len(measurements)} defects"
+              + (f"  QA → {qa}" if qa else ""))
+
+    rows = tracks_to_rows(all_tracks, gps, meas_by_id)
     write_defects_csv(out_dir / "defects.csv", rows)
     write_defects_json(out_dir / "defects.json", rows)
     (out_dir / "route.json").write_text(
@@ -432,6 +509,15 @@ def run_inference(cfg: InferConfig) -> dict:
         "expected_duration_s": round(expected_s, 1),
         "annotated_duration_s": None if out_s is None else round(out_s, 1),
         "elapsed_s": round(elapsed, 1),
+        "camera": None if cam_model is None else cam_model.as_dict(),
+        "gsd_check": None if gsd_check is None else gsd_check.as_dict(),
+        "area": {
+            "measured": bool(cfg.measure_area),
+            "sam": bool(cfg.use_sam),
+            "n_with_m2": sum(
+                1 for r in rows if r.get("area_m2") not in ("", None)
+            ),
+        },
         "phase2_note": (
             "Phase 2 (later): set inference.backend in config.yaml and "
             "reuse detect_track + IRC report; optional full 3-panel dashboard."
@@ -527,6 +613,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--camera-pitch-deg", type=float, default=None)
     p.add_argument("--vfov-deg", type=float, default=None)
     p.add_argument(
+        "--hfov-deg",
+        type=float,
+        default=None,
+        dest="h_fov_deg",
+        help="True horizontal FOV (not the marketing diagonal). Linear GoPro ≈ 86°.",
+    )
+    p.add_argument(
+        "--camera-json",
+        type=Path,
+        default=None,
+        help="From: python -m tools.rfdetr_infer.camera_measure --height-m ...",
+    )
+    p.add_argument("--k1", type=float, default=0.0, help="Radial distortion (0 for Linear)")
+    p.add_argument("--k2", type=float, default=0.0)
+    p.add_argument(
+        "--no-area",
+        action="store_true",
+        help="Skip SAM + m² measurement",
+    )
+    p.add_argument(
+        "--no-sam",
+        action="store_true",
+        help="Measure area from filled boxes (overestimate) instead of SAM",
+    )
+    p.add_argument("--sam-model", type=str, default="sam2.1_b.pt")
+    p.add_argument("--no-area-qa", action="store_true")
+    p.add_argument(
         "--crf",
         type=int,
         default=23,
@@ -602,6 +715,14 @@ def main(argv: list[str] | None = None) -> int:
         camera_height_m=args.camera_height_m,
         camera_pitch_deg=args.camera_pitch_deg,
         vfov_deg=args.vfov_deg,
+        h_fov_deg=args.h_fov_deg,
+        camera_json=args.camera_json,
+        k1=args.k1,
+        k2=args.k2,
+        measure_area=not args.no_area,
+        use_sam=not args.no_sam,
+        sam_model=args.sam_model,
+        area_qa=not args.no_area_qa,
         crf=args.crf,
         backend=args.backend,
     )

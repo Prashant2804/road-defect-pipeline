@@ -34,12 +34,18 @@ class Track:
     age: int = 0  # frames since last match (strided)
     conf_max: float = 0.0
     bbox_best: tuple[float, float, float, float] = field(default_factory=tuple)
+    frame_best: int = -1
+    t_best_s: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.bbox_best:
             self.bbox_best = self.bbox
         if self.conf_max <= 0:
             self.conf_max = self.conf
+        if self.frame_best < 0:
+            self.frame_best = self.frame_start
+        if self.t_best_s <= 0:
+            self.t_best_s = self.t_start_s
 
 
 @dataclass
@@ -92,9 +98,13 @@ class SimpleTracker:
             tr.t_end_s = t_s
             tr.hits += 1
             tr.age = 0
-            if conf >= tr.conf_max:
+            if conf > tr.conf_max:
                 tr.conf_max = conf
+            # Nearest observation = lowest in the frame (largest y2).
+            if (not tr.bbox_best) or box[3] >= tr.bbox_best[3]:
                 tr.bbox_best = box
+                tr.frame_best = frame_i
+                tr.t_best_s = t_s
             matched_track.add(ti)
             matched_det.add(di)
             updated.append(tr)
@@ -123,6 +133,8 @@ class SimpleTracker:
                 t_end_s=t_s,
                 conf_max=conf,
                 bbox_best=box_t,
+                frame_best=frame_i,
+                t_best_s=t_s,
             )
             self._next_id += 1
             self.active.append(tr)

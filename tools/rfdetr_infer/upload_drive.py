@@ -24,6 +24,7 @@ DEFAULT_FILES = (
     "map_trail.html",
     "summary.json",
     "route.json",
+    "dashboard/index.html",
 )
 
 # Files for the isolated dashboard pack (sibling *_dashboard folder)
@@ -365,6 +366,16 @@ def upload_run(
         else:
             fid = upload_file(service, path, folder_id, overwrite=overwrite)
         print(f"    ok id={fid}")
+
+    qa_dir = Path(run_dir) / "area_qa"
+    if qa_dir.is_dir():
+        shots = sorted(qa_dir.glob("*.jpg"))[:80]
+        if shots:
+            qa_id = ensure_subfolder(service, folder_id, "area_qa")
+            print(f"Uploading {len(shots)} area QA stills")
+            for shot in shots:
+                fid = upload_file(service, shot, qa_id, overwrite=overwrite)
+                print(f"    ok {shot.name} id={fid}")
 
     print("\nDone.")
     print(f"Open: https://drive.google.com/drive/folders/{folder_id}")
