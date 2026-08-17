@@ -79,6 +79,34 @@ DRONE_SOURCES: dict[str, DroneSource] = {
         documented_altitude_m=None,
         notes="465 images, pothole-only, visually confirmed nadir crops. Good for scale diversity.",
     ),
+    "college_pavement_distress": DroneSource(
+        key="college_pavement_distress",
+        name="Roboflow: Pavement Distress Datasets (by COLLEGE)",
+        url="https://universe.roboflow.com/college-7qowe/pavement-distress-datasets",
+        license="Public Domain",
+        format="roboflow_coco",
+        documented_altitude_m=None,
+        notes=(
+            "1,120 images, ground-level/handheld close-range crops (not drone/nadir) — "
+            "nearest available match for ravelling/edge_damage. High/Medium/Low severity "
+            "for Edge Cracking, Pothole, Ravelling + Medium Rutting. Already used by the "
+            "dashcam Stage-2 pipeline (download.py use_pavement_distress)."
+        ),
+    ),
+    "rd01_pwd": DroneSource(
+        key="rd01_pwd",
+        name="Roboflow: RD01 (by RCDRD01)",
+        url="https://universe.roboflow.com/rcdrd01/rd01",
+        license="MIT",
+        format="roboflow_coco",
+        documented_altitude_m=None,
+        notes=(
+            "1,362 images, mixed ground-level/oblique Indian-PWD-style severity taxonomy "
+            "(31 raw classes). Adds Edge_Breaking, Loss_of_Aggregate, Hungry_Surface, "
+            "Corrugations as additional ravelling/edge_damage instances beyond the "
+            "COLLEGE set. Not drone/nadir."
+        ),
+    ),
     "cqu_bpdd_ravelling": DroneSource(
         key="cqu_bpdd_ravelling",
         name="CQU-BPDD (ravelling subset only)",

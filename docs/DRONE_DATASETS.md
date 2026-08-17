@@ -8,10 +8,13 @@ pothole, ravelling, edge_damage`) so RFDETRMedium can be fine-tuned on either
 viewpoint with the same training code.
 
 Run it: `python -m tools.rfdetr_train.download_drone` or `./scripts/run_drone_stage1.sh`.
-Add `--cqu-bpdd-ravelling` for the opt-in ravelling source, or
-`--extra-local edge_damage=/path/to/coco_or_yolo` (repeatable) once you have a
-hand-labeled bootstrap batch for `edge_damage`/`drainage_issue` — see
-"`ravelling`/`edge_damage` sourcing" below before using either.
+Two ground-level "nearest match" sources for `ravelling`/`edge_damage` are on
+by default (`college_pavement_distress`, `rd01_pwd` — disable with
+`--no-college-pavement-distress`/`--no-rd01-pwd`); `--cqu-bpdd-ravelling` adds
+a third, non-commercial-licensed one, off by default. `--extra-local
+edge_damage=/path/to/coco_or_yolo` (repeatable) merges in your own
+hand-labeled bootstrap once you have one — the only real fix for
+`drainage_issue`. See "`ravelling`/`edge_damage` sourcing" below.
 
 ## Why no perspective/road-segmentation stage
 
@@ -33,6 +36,8 @@ because there's no perspective distortion to hide a mismatched capture scale.
 | [UAPD](https://github.com/tantantetetao/UAPD-Pavement-Distress-Dataset) ([raw file](https://drive.google.com/file/d/1yQ0GMXFwwM5qdYY_5HzJBQqqjNtWJxEc/view)) | 3,151 (512×512 crops) | 2,147 | transverse/longitudinal/oblique/alligator/block crack, pothole, repair | VOC XML | Released for public research use (cite Zhu et al., *Automation in Construction* 2022) | not specified |
 | [HighRPD](https://data.mendeley.com/datasets/sywswj7djj/1) (Mendeley DOI 10.17632/sywswj7djj.1) | 11,696 | 11,696 | line crack, block crack, pit (pothole) | YOLO txt, fixed ids (0/1/2) | CC BY 4.0 | 50 m, DJI M300 + Zenmuse P1 |
 | [Roboflow: Pothole detection (by Drone)](https://universe.roboflow.com/drone-zh0ho/pothole-detection-zdizt) | 465 | 465 | pothole only | Roboflow COCO/YOLO export | MIT | not specified |
+| [Roboflow: Pavement Distress Datasets (COLLEGE)](https://universe.roboflow.com/college-7qowe/pavement-distress-datasets) — **ground-level, not drone** | 1,120 | up to 1,120 | Edge Cracking / Pothole / Ravelling × {High,Medium,Low}, Medium Rutting | Roboflow COCO/YOLO export | **Public Domain** | not a drone — handheld close-range |
+| [Roboflow: RD01 (RCDRD01)](https://universe.roboflow.com/rcdrd01/rd01) — **ground-level, not drone** | 1,362 | up to 1,362 | 31 classes incl. Edge_Breaking/Edge_Cracks, Ravelling, Loss_of_Aggregate, Hungry_Surface, Corrugations, severity-graded Indian-PWD style | Roboflow COCO/YOLO export | MIT | not a drone — mixed ground-level/oblique |
 | [CQU-BPDD](https://huggingface.co/datasets/Ggggcs/CQU-BPDD) — **opt-in, off by default** | 477 (ravelling only, of 60,056) | 477 | ravelling (whole-image label → full-frame box) | Nested ZIP, HF-hosted | **CC BY-NC 4.0 (non-commercial)** | not a drone — in-vehicle camera, ~2×3m patch |
 
 `tools/rfdetr_train/drone_sources.py` holds this same table in code
@@ -74,12 +79,14 @@ Longitudinal 1,340 / Transverse 1,327 / Alligator 414 / Oblique 173 / Pothole 94
 Block 3. HighRPD: Line 12,365 / Block 8,239 / Pit 1,412.
 
 Merged dataset size before any train/valid/test split: **16,712 images**
-(2,404 + 2,147 + 11,696 + 465). The `pothole` row is the thin one — 1,662
-images vs. 6,450–11,073 for the crack classes — worth watching for class
-imbalance once `drainage_issue`/`edge_damage` are added from your own
-bootstrap; `coco_io.cap_majority_class_images` (already used by the dashcam
-Stage-2 merge) is available if crack classes end up crowding out pothole
-instead of the other way round — check the histogram
+from the 4 nadir sources (2,404 + 2,147 + 11,696 + 465), plus up to 1,120 +
+1,362 more from `college_pavement_distress`/`rd01_pwd` (ground-level; exact
+per-class split needs a Roboflow API key to inspect, shows up in the
+histogram after your first run). The `pothole` row is the thin one among the
+nadir sources — 1,662 images vs. 6,450–11,073 for the crack classes — worth
+watching for class imbalance; `coco_io.cap_majority_class_images` (already
+used by the dashcam Stage-2 merge) is available if crack classes end up
+crowding out pothole instead of the other way round — check the histogram
 `download_drone.py` prints after each run.
 
 ### Ruled out
@@ -127,41 +134,74 @@ likely *why* no drone dataset labels them, not just an oversight:
   is exactly why the dashcam pipeline can see it) but is easy to miss in
   pure monocular nadir RGB without a shadow or a stereo/depth cue.
 
-Given that, the honest options, in order of how much they actually help:
+Given that, no drone-native match exists for either class — but two
+ground-level "nearest match" sources are wired in and **on by default**
+(the user explicitly chose a viewpoint-mismatched real dataset over zero
+data for these two classes):
 
-1. **`ravelling` — CQU-BPDD, opt-in (`--cqu-bpdd-ravelling`), off by default.**
-   The [Chongqing University Bituminous Pavement Disease Detection Dataset](https://huggingface.co/datasets/Ggggcs/CQU-BPDD)
-   is the only public source with any ravelling coverage at a near-nadir
-   angle — captured by an **in-vehicle inspection camera pointed straight
-   down** (not a drone; 2×3 m patch per image, ~1,200×900 px) rather than
-   altitude. It has **956 ravelling images** (477 train / 479 test) among
-   60,056 total, **CC BY-NC 4.0 — non-commercial only**, and ships **whole-image
-   classification labels, not boxes** — `download_cqu_bpdd_ravelling()` +
-   `ingest_classification_folder()` convert each into one full-frame weak box,
-   which is real signal for "is this patch ravelling" but not a tight
-   localization the way the other sources' boxes are. `_apply_gsd` will
-   under- or over-scale it badly relative to your drone's actual altitude
-   until you've measured its GSD too (see "Calibrating GSD" — a 2×3 m patch
-   at ~1,200 px wide implies roughly 0.25 cm/px, several times finer than the
-   30–50 m sources, so leaving `_target` unset and training on the raw mix is
-   *not* a safe default here the way it arguably is for the other four).
-   Enable it only if the non-commercial license is acceptable for how this
-   model will be used, and expect a weaker, coarser-localized `ravelling` head
-   than the other five classes get.
-2. **`edge_damage` (and `drainage_issue`, and `ravelling` if you want tighter
-   boxes than CQU-BPDD's) — hand-labeled bootstrap, `--extra-local NAME=PATH`.**
-   This is the mechanism actually worth investing in: fly your own drone over
-   a few km of known-bad rural road, run the checkpoint trained on the
-   sources above (it'll miss drainage/edge cases — expected), then use this
-   repo's existing SAM-assisted labeling workflow (README "Labeling workflow
-   (SAM-assisted)") to box-label the frames where they appear. Export as COCO
-   or YOLO and pass `--extra-local edge_damage=/path/to/export` — it's merged
-   in via the same `ingest_to_coco` auto-detector the dashcam pipeline uses
-   for `--local-dir`, with real per-instance boxes, at your actual drone's
-   GSD, in your actual rural-India conditions. Even 200–400 instances is
-   normally enough for RF-DETR to pick up a visually distinct class. This is
-   the only path that gets `edge_damage` real coverage at all — nothing
-   public exists for it at any camera angle.
+1. **`college_pavement_distress`** — Roboflow ["Pavement Distress Datasets" by
+   COLLEGE](https://universe.roboflow.com/college-7qowe/pavement-distress-datasets),
+   1,120 images, **Public Domain**. Handheld/close-range shots pointed roughly
+   down at the pavement surface (not drone altitude, but closer to nadir than
+   a dashcam) — the preview grid is texture-level crops, not street scenes.
+   Ships `High/Medium/Low Edge Cracking`, `.../Pothole`, `.../Ravelling`, and
+   `Medium Rutting`; the taxonomy's existing severity-prefix stripping
+   resolves all of these with zero new aliases needed. Already used by the
+   dashcam Stage-2 pipeline (`download.py`'s `use_pavement_distress`), so
+   it's a previously-vetted source, not a new unknown.
+2. **`rd01_pwd`** — Roboflow ["RD01" by RCDRD01](https://universe.roboflow.com/rcdrd01/rd01),
+   1,362 images, MIT. Mixed ground-level/oblique — one preview frame is a
+   narrow tree-lined rural road, consistent with an Indian PWD road-condition
+   survey. 31 raw classes in a severity-graded taxonomy that reads as
+   official Indian pavement-engineering terminology; added 4 new taxonomy
+   aliases for this source specifically: `Edge_Breaking` → `edge_damage`,
+   `Loss_of_Aggregate` / `Hungry_Surface` / `Corrugations` → `ravelling`
+   (aggregate stripped from the binder and a lean/dry-looking surface are
+   both standard descriptions of the same early-stage ravelling; corrugation
+   folds in the same way rutting already does).
+
+Both are excluded from `_apply_gsd` — their capture geometry (handheld,
+unknown/variable distance) has no altitude to normalize against, so mixing
+them into the GSD-normalized nadir sources means `ravelling`/`edge_damage`
+will see a wider range of apparent scale than the other four classes. Watch
+the per-class histogram after a run; if these two dominate the merged
+`ravelling`/`edge_damage` counts and validation looks worse on genuine drone
+frames than on these ground-level crops, that scale mismatch is the likely
+cause — `--no-college-pavement-distress`/`--no-rd01-pwd` drop them.
+
+Two more options if you want to go further:
+
+3. **CQU-BPDD, opt-in (`--cqu-bpdd-ravelling`), off by default.** The only
+   *near-nadir-altitude* ravelling source (in-vehicle camera pointed straight
+   down, not handheld) — see below for the full non-commercial/weak-label
+   tradeoff before enabling.
+4. **Hand-labeled bootstrap, `--extra-local NAME=PATH`.** Still the only way
+   to get `drainage_issue` any coverage, and the only way to get tighter,
+   true-drone-GSD boxes for `edge_damage`/`ravelling` than any of the above.
+   Fly your own drone, run the checkpoint trained on what's here (it'll miss
+   drainage/edge cases — expected), then use this repo's existing
+   SAM-assisted labeling workflow (README "Labeling workflow (SAM-assisted)")
+   to box-label the frames where they appear. Export as COCO or YOLO and pass
+   `--extra-local edge_damage=/path/to/export` — merged in via the same
+   `ingest_to_coco` auto-detector the dashcam pipeline uses for `--local-dir`.
+   Even 200–400 instances is normally enough for RF-DETR to pick up a
+   visually distinct class.
+
+### CQU-BPDD detail
+
+The [Chongqing University Bituminous Pavement Disease Detection Dataset](https://huggingface.co/datasets/Ggggcs/CQU-BPDD)
+is captured by an **in-vehicle inspection camera pointed straight down** (not
+a drone; 2×3 m patch per image, ~1,200×900 px) rather than altitude. It has
+**956 ravelling images** (477 train / 479 test) among 60,056 total, **CC BY-NC
+4.0 — non-commercial only**, and ships **whole-image classification labels,
+not boxes** — `download_cqu_bpdd_ravelling()` + `ingest_classification_folder()`
+convert each into one full-frame weak box, which is real signal for "is this
+patch ravelling" but not a tight localization the way the other sources'
+boxes are. `_apply_gsd` will under- or over-scale it badly relative to your
+drone's actual altitude until you've measured its GSD too (see "Calibrating
+GSD" — a 2×3 m patch at ~1,200 px wide implies roughly 0.25 cm/px, several
+times finer than the 30–50 m sources). Enable it only if the non-commercial
+license is acceptable for how this model will be used.
 
 ## Class mapping into the 6-class taxonomy
 
@@ -176,6 +216,8 @@ extend that file, not the ingestion code, if a new source uses different labels:
 | alligator crack (AC), block crack | `alligator_crack` | Block cracking is alligator/fatigue cracking's rectangular-cell form, same failure mode viewed top-down. |
 | pothole (PH), pit | `pothole` | Direct match. |
 | repair (RP) | dropped (`None`) | Already-fixed pavement — matches the dashcam pipeline's existing `"repair": None`. |
+| Edge_Breaking | `edge_damage` | RD01's term for edge/shoulder deterioration. |
+| Loss_of_Aggregate, Hungry_Surface, Corrugations | `ravelling` | PWD terms for the same distress at different stages, plus corrugation folding in the same way rutting already does. |
 
 **`drainage_issue` has no public source at any camera angle; `edge_damage`
 likewise; `ravelling` has exactly one, CQU-BPDD.** See "`ravelling` /

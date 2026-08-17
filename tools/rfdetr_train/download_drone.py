@@ -8,9 +8,15 @@ Sources (see tools/rfdetr_train/drone_sources.py for citations/licenses):
   - CQU-BPDD ravelling subset (CC BY-NC 4.0, opt-in via --cqu-bpdd-ravelling) —
     the only public ravelling source at a near-nadir angle; not a drone, and
     whole-image weak labels only. See docs/DRONE_DATASETS.md before enabling.
+  - Roboflow "Pavement Distress Datasets" by COLLEGE (Public Domain) and
+    "RD01" by RCDRD01 (MIT) — ground-level/handheld close-range shots, NOT
+    drone or nadir, but the nearest available match for ravelling/edge_damage:
+    Indian-PWD-style severity taxonomy, real instance-level boxes (not whole-
+    image labels like CQU-BPDD). On by default; see docs/DRONE_DATASETS.md
+    "ravelling / edge_damage sourcing" for the viewpoint-mismatch tradeoff.
 
-edge_damage (and drainage_issue) have no public source at any camera angle —
-merge in your own hand-labeled bootstrap via --extra-local NAME=/path/to/coco.
+drainage_issue has no public source at any camera angle — merge in your own
+hand-labeled bootstrap via --extra-local drainage_issue=/path/to/coco.
 See docs/DRONE_DATASETS.md "Coverage gaps".
 """
 from __future__ import annotations
@@ -264,6 +270,8 @@ def prepare_drone_stage1(
     use_uapd: bool = True,
     use_highrpd: bool = True,
     use_rf_pothole_drone: bool = True,
+    use_college_pavement_distress: bool = True,
+    use_rd01_pwd: bool = True,
     use_cqu_bpdd_ravelling: bool = False,
     local_overrides: dict[str, Path] | None = None,
     extra_local: list[tuple[str, Path]] | None = None,
@@ -336,6 +344,37 @@ def prepare_drone_stage1(
         except Exception as e:
             print(f"  SKIPPED rf_pothole_drone: {e}")
 
+    # Ground-level/handheld close-range shots, NOT drone or nadir — the nearest
+    # available match for ravelling/edge_damage rather than an exact one. See
+    # docs/DRONE_DATASETS.md "ravelling / edge_damage sourcing" for the tradeoff.
+    if use_college_pavement_distress:
+        print("\n=== college_pavement_distress ===")
+        try:
+            raw_dest = raw_dir / "college_pavement_distress"
+            raw = local_overrides.get("college_pavement_distress") or download_roboflow(
+                "college-7qowe", "pavement-distress-datasets", 1, raw_dest, fmt="coco"
+            )
+            part_out = parts_dir / "college_pavement_distress"
+            part_out = ensure_roboflow_coco_layout(raw, part_out)
+            parts.append(part_out)
+            print(f"  OK -> {part_out}")
+        except Exception as e:
+            print(f"  SKIPPED college_pavement_distress: {e}")
+
+    if use_rd01_pwd:
+        print("\n=== rd01_pwd ===")
+        try:
+            raw_dest = raw_dir / "rd01_pwd"
+            raw = local_overrides.get("rd01_pwd") or download_roboflow(
+                "rcdrd01", "rd01", 1, raw_dest, fmt="coco"
+            )
+            part_out = parts_dir / "rd01_pwd"
+            part_out = ensure_roboflow_coco_layout(raw, part_out)
+            parts.append(part_out)
+            print(f"  OK -> {part_out}")
+        except Exception as e:
+            print(f"  SKIPPED rd01_pwd: {e}")
+
     if use_cqu_bpdd_ravelling:
         print("\n=== cqu_bpdd_ravelling ===")
         print(
@@ -392,12 +431,19 @@ def prepare_drone_stage1(
 
     print_class_histogram(out_dir)
     print(f"\nDRONE_STAGE1_DIR = {out_dir}")
+    if use_college_pavement_distress or use_rd01_pwd:
+        print(
+            "\nNOTE: ravelling/edge_damage instances above include ground-level/"
+            "handheld close-range sources (college_pavement_distress, rd01_pwd) — "
+            "not drone/nadir. Nearest available match, not an exact one; see "
+            "docs/DRONE_DATASETS.md 'ravelling / edge_damage sourcing'."
+        )
     if not extra_local:
         print(
-            "\nNOTE: edge_damage has no public source at any camera angle, and "
-            "drainage_issue has none either — see docs/DRONE_DATASETS.md 'Coverage "
-            "gaps'. Use --extra-local edge_damage=/path/to/coco_or_yolo (and "
-            "drainage_issue=...) once you have a hand-labeled bootstrap batch."
+            "\nNOTE: drainage_issue has no public source at any camera angle — "
+            "see docs/DRONE_DATASETS.md 'Coverage gaps'. Use --extra-local "
+            "drainage_issue=/path/to/coco_or_yolo once you have a hand-labeled "
+            "bootstrap batch."
         )
     return out_dir
 
@@ -422,6 +468,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-highrpd", action="store_true")
     p.add_argument("--no-rf-pothole-drone", action="store_true")
     p.add_argument(
+        "--no-college-pavement-distress",
+        action="store_true",
+        help="Drop the ground-level ravelling/edge_damage/pothole source (Public Domain, "
+        "not drone/nadir — see docs/DRONE_DATASETS.md). On by default.",
+    )
+    p.add_argument(
+        "--no-rd01-pwd",
+        action="store_true",
+        help="Drop the ground-level Indian-PWD-style ravelling/edge_damage source (MIT, "
+        "not drone/nadir — see docs/DRONE_DATASETS.md). On by default.",
+    )
+    p.add_argument(
         "--cqu-bpdd-ravelling",
         action="store_true",
         help="Opt in to CQU-BPDD's ravelling subset (CC BY-NC 4.0 non-commercial only; "
@@ -434,7 +492,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="SOURCE=PATH",
         help="Use a manually-downloaded folder/zip instead of fetching SOURCE "
-        "(uav_pdd2023|uapd|highrpd|rf_pothole_drone). Repeatable.",
+        "(uav_pdd2023|uapd|highrpd|rf_pothole_drone|college_pavement_distress|"
+        "rd01_pwd|cqu_bpdd_ravelling). Repeatable.",
     )
     p.add_argument(
         "--extra-local",
@@ -479,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
         use_uapd=not args.no_uapd,
         use_highrpd=not args.no_highrpd,
         use_rf_pothole_drone=not args.no_rf_pothole_drone,
+        use_college_pavement_distress=not args.no_college_pavement_distress,
+        use_rd01_pwd=not args.no_rd01_pwd,
         use_cqu_bpdd_ravelling=args.cqu_bpdd_ravelling,
         local_overrides=overrides,
         extra_local=extra,

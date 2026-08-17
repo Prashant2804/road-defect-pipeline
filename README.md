@@ -618,11 +618,14 @@ Skip a source: `EXTRA_DOWNLOAD_ARGS="--no-uapd" ./scripts/run_drone_stage1.sh`.
 Manually-downloaded fallback (if Zenodo/Mendeley/Drive are blocked from the VM):
 `--local uav_pdd2023=/path/to/zip_or_dir`.
 
-`ravelling` and `edge_damage` are thin/absent from the 4 default sources —
-`--cqu-bpdd-ravelling` opts into a non-commercial, non-drone ravelling source
-(956 whole-image-labeled examples), and `--extra-local edge_damage=/path` merges
-in your own hand-labeled bootstrap batch (COCO/YOLO, any class from the taxonomy).
-See [docs/DRONE_DATASETS.md](docs/DRONE_DATASETS.md) `"ravelling / edge_damage sourcing"`
+`ravelling`/`edge_damage` have no drone-native source, so two ground-level
+"nearest match" Roboflow sets are on by default (`college_pavement_distress`,
+Public Domain; `rd01_pwd`, MIT, Indian-PWD-style taxonomy) — disable with
+`--no-college-pavement-distress`/`--no-rd01-pwd`. `--cqu-bpdd-ravelling` opts
+into a third, non-commercial, in-vehicle (not drone) ravelling source; and
+`--extra-local edge_damage=/path` merges in your own hand-labeled bootstrap
+batch (COCO/YOLO, any class from the taxonomy) — the only real fix for
+`drainage_issue`. See [docs/DRONE_DATASETS.md](docs/DRONE_DATASETS.md) `"ravelling / edge_damage sourcing"`
 before using either.
 
 ### RF-DETR Medium on built 6-class (50 epochs, high VRAM)
