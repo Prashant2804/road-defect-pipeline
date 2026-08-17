@@ -23,15 +23,59 @@ because there's no perspective distortion to hide a mismatched capture scale.
 
 ## Sources used
 
-| Source | Images | Instances | Classes shipped | Format | License | Altitude (documented) |
+| Source | Raw images | Annotated images (kept classes) | Classes shipped | Format | License | Altitude (documented) |
 |---|---|---|---|---|---|---|
-| [UAV-PDD2023](https://zenodo.org/records/8429208) | 2,440 | 11,158 | longitudinal/transverse/oblique/alligator crack, repair, pothole | VOC XML | CC BY 4.0 | 30 m, nadir, hover or 0.8 m/s |
-| [UAPD](https://github.com/tantantetetao/UAPD-Pavement-Distress-Dataset) | 3,151 (512×512 crops) | — | transverse/longitudinal/oblique/alligator crack, pothole, repair | VOC XML | Released for public research use (cite Zhu et al., *Automation in Construction* 2022) | not specified |
-| [HighRPD](https://data.mendeley.com/datasets/sywswj7djj/1) | 11,696 | 22,016 (line 12,365 / block 8,239 / pit 1,412) | line crack, block crack, pit (pothole) | YOLO txt, fixed ids (0/1/2) | CC BY 4.0 | 50 m, DJI M300 + Zenmuse P1 |
-| [Roboflow: Pothole detection (by Drone)](https://universe.roboflow.com/drone-zh0ho/pothole-detection-zdizt) | 465 | — | pothole only | Roboflow COCO/YOLO export | MIT | not specified |
+| [UAV-PDD2023](https://zenodo.org/records/8429208) (Zenodo record 8429208) | 2,440 | 2,404 | longitudinal/transverse/oblique/alligator crack, repair, pothole | VOC XML | CC BY 4.0 | 30 m, nadir, hover or 0.8 m/s |
+| [UAPD](https://github.com/tantantetetao/UAPD-Pavement-Distress-Dataset) ([raw file](https://drive.google.com/file/d/1yQ0GMXFwwM5qdYY_5HzJBQqqjNtWJxEc/view)) | 3,151 (512×512 crops) | 2,147 | transverse/longitudinal/oblique/alligator/block crack, pothole, repair | VOC XML | Released for public research use (cite Zhu et al., *Automation in Construction* 2022) | not specified |
+| [HighRPD](https://data.mendeley.com/datasets/sywswj7djj/1) (Mendeley DOI 10.17632/sywswj7djj.1) | 11,696 | 11,696 | line crack, block crack, pit (pothole) | YOLO txt, fixed ids (0/1/2) | CC BY 4.0 | 50 m, DJI M300 + Zenmuse P1 |
+| [Roboflow: Pothole detection (by Drone)](https://universe.roboflow.com/drone-zh0ho/pothole-detection-zdizt) | 465 | 465 | pothole only | Roboflow COCO/YOLO export | MIT | not specified |
 
 `tools/rfdetr_train/drone_sources.py` holds this same table in code
 (`DRONE_SOURCES`) plus the license/URL each downloader cites.
+
+**Every number above (except the Roboflow row) was computed directly from the
+real archive**, not copied from the paper abstract — the full UAPD zip was
+downloaded and parsed, and UAV-PDD2023/HighRPD were parsed via HTTP range
+reads against their real ZIP central directories (no full download needed:
+Zenodo and the Mendeley→S3 redirect both serve `Accept-Ranges: bytes`). The
+instance totals matched each paper's published aggregate exactly (UAV-PDD2023:
+11,158; HighRPD: 12,365/8,239/1,412), which cross-checks the parse. Roboflow's
+465 is read off the dataset page instead — exact instance count needs a
+Roboflow API key.
+
+### Class-wise breakdown (after remapping to the 6-class taxonomy)
+
+Instances = individual bounding boxes. Images = images containing **at least
+one** box of that class (an image with both a pothole and a crack counts in
+both rows, so column sums exceed each source's annotated-image count above).
+
+| Class | UAV-PDD2023 | UAPD | HighRPD | RF pothole-drone | **Total instances** | **Total images** |
+|---|---|---|---|---|---|---|
+| `longitudinal_crack` | 10,078 inst / 2,377 img | 2,840 inst / 1,843 img | 12,365 inst / 6,853 img | — | **25,283** | **11,073** |
+| `alligator_crack` | 603 inst / 408 img | 417 inst / 365 img | 8,239 inst / 5,677 img | — | **9,259** | **6,450** |
+| `pothole` | 195 inst / 132 img | 94 inst / 68 img | 1,412 inst / 997 img | ≥465 inst / 465 img | **≥2,166** | **1,662** |
+| `drainage_issue` | 0 | 0 | 0 | 0 | **0** | **0** |
+| `ravelling` | 0 | 0 | 0 | 0 | **0** | **0** |
+| `edge_damage` | 0 | 0 | 0 | 0 | **0** | **0** |
+
+`longitudinal_crack` folds in transverse + oblique + line crack; `alligator_crack`
+folds in block crack — see the mapping table below for why. `repair` instances
+(1,904 combined, UAV-PDD2023 + UAPD) are dropped, not miscounted into another
+class.
+
+Raw pre-mapping counts, for reference — UAV-PDD2023: Transverse 5,398 / Longitudinal
+2,994 / Oblique 1,686 / Alligator 603 / Repair 282 / Pothole 195. UAPD: Repair 1,622 /
+Longitudinal 1,340 / Transverse 1,327 / Alligator 414 / Oblique 173 / Pothole 94 /
+Block 3. HighRPD: Line 12,365 / Block 8,239 / Pit 1,412.
+
+Merged dataset size before any train/valid/test split: **16,712 images**
+(2,404 + 2,147 + 11,696 + 465). The `pothole` row is the thin one — 1,662
+images vs. 6,450–11,073 for the crack classes — worth watching for class
+imbalance once `drainage_issue`/`edge_damage` are added from your own
+bootstrap; `coco_io.cap_majority_class_images` (already used by the dashcam
+Stage-2 merge) is available if crack classes end up crowding out pothole
+instead of the other way round — check the histogram
+`download_drone.py` prints after each run.
 
 ### Ruled out
 
