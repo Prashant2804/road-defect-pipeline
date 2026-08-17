@@ -5,9 +5,13 @@ Sources (see tools/rfdetr_train/drone_sources.py for citations/licenses):
   - UAPD        (Google Drive, public)   — VOC XML, same taxonomy, dedup'd against UAV-PDD2023
   - HighRPD     (Mendeley, CC BY 4.0)    — YOLO txt, 3 classes (line/block/pit)
   - Roboflow "Pothole detection by Drone" (MIT) — pothole-only, nadir-confirmed
+  - CQU-BPDD ravelling subset (CC BY-NC 4.0, opt-in via --cqu-bpdd-ravelling) —
+    the only public ravelling source at a near-nadir angle; not a drone, and
+    whole-image weak labels only. See docs/DRONE_DATASETS.md before enabling.
 
-No public drone dataset covers drainage_issue or edge_damage — see
-docs/DRONE_DATASETS.md "Coverage gaps" for the recommended bootstrap plan.
+edge_damage (and drainage_issue) have no public source at any camera angle —
+merge in your own hand-labeled bootstrap via --extra-local NAME=/path/to/coco.
+See docs/DRONE_DATASETS.md "Coverage gaps".
 """
 from __future__ import annotations
 
@@ -18,15 +22,26 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from .coco_io import ensure_roboflow_coco_layout, merge_coco_datasets, print_class_histogram
+import io
+import struct
+import zipfile
+import zlib
+
+from .coco_io import (
+    ensure_roboflow_coco_layout,
+    ingest_to_coco,
+    merge_coco_datasets,
+    print_class_histogram,
+)
 from .config import DroneStage1Config
 from .download import download_roboflow, extract_zip, load_dotenv
-from .drone_ingest import ingest_highrpd, ingest_voc_dataset
-from .drone_sources import SOURCE_GSD_CM_PX, resize_split_to_target
+from .drone_ingest import ingest_classification_folder, ingest_highrpd, ingest_voc_dataset
+from .drone_sources import CQU_BPDD_TRAIN_COUNTS, SOURCE_GSD_CM_PX, resize_split_to_target
 
 ZENODO_UAV_PDD2023_URL = "https://zenodo.org/api/records/8429208/files/UAV-PDD2023.zip/content"
 MENDELEY_HIGHRPD_API = "https://data.mendeley.com/public-api/datasets/sywswj7djj"
 UAPD_GDRIVE_FILE_ID = "1yQ0GMXFwwM5qdYY_5HzJBQqqjNtWJxEc"
+CQU_BPDD_URL = "https://huggingface.co/datasets/Ggggcs/CQU-BPDD/resolve/main/CQU-BPDD.zip"
 
 
 def _download_url(url: str, dest_zip: Path, *, chunk_mb: int = 32) -> Path:
@@ -89,6 +104,158 @@ def download_uapd(dest: Path) -> Path:
     return extract_zip(zip_path, dest / "extracted")
 
 
+class _HTTPRangeFile(io.RawIOBase):
+    """Minimal seekable file-like object over HTTP Range requests, for zipfile.
+
+    Used to read a remote ZIP's central directory (a few KB) without
+    downloading the whole archive — zipfile only seeks/reads what it needs.
+    """
+
+    def __init__(self, url: str):
+        self.url = url
+        with urllib.request.urlopen(
+            urllib.request.Request(url, method="HEAD", headers={"User-Agent": "road-defect-pipeline/1.0"})
+        ) as resp:
+            self.size = int(resp.headers["Content-Length"])
+        self.pos = 0
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self.pos = offset
+        elif whence == 1:
+            self.pos += offset
+        elif whence == 2:
+            self.pos = self.size + offset
+        return self.pos
+
+    def tell(self) -> int:
+        return self.pos
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray) -> int:
+        end = min(self.pos + len(b), self.size) - 1
+        if self.pos > end:
+            return 0
+        req = urllib.request.Request(
+            self.url,
+            headers={"Range": f"bytes={self.pos}-{end}", "User-Agent": "road-defect-pipeline/1.0"},
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = resp.read()
+        b[: len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def download_cqu_bpdd_ravelling(dest: Path) -> Path:
+    """Pull just the ravelling images out of CQU-BPDD's train split.
+
+    CQU-BPDD (non-commercial license, see drone_sources.DRONE_SOURCES) is not
+    a drone dataset — an in-vehicle inspection camera, not drone altitude —
+    and only ships whole-image classification labels, no boxes. It's the only
+    public source with any ravelling coverage at a near-nadir angle, so it's
+    opt-in (--cqu-bpdd-ravelling) rather than part of the default merge.
+
+    The archive nests train/val/test as three separately-DEFLATEd inner zips
+    inside one outer zip, so we can fetch just train.zip's byte range from the
+    outer archive (skip the far larger test.zip) — but the inner stream still
+    has to be decompressed sequentially start-to-end to reach its own central
+    directory, so this downloads and decompresses the full train.zip (~3.9GB
+    compressed). Once local, folders are matched against CQU-BPDD's own
+    published per-class counts (drone_sources.CQU_BPDD_TRAIN_COUNTS) rather
+    than by name — the archive's internal folder names (e.g.
+    "cementation_fissures") don't match the paper's English class names.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    local_train_zip = dest / "train.zip"
+
+    if not local_train_zip.exists():
+        print("  Locating train.zip inside the CQU-BPDD archive...")
+        outer = zipfile.ZipFile(_HTTPRangeFile(CQU_BPDD_URL))
+        train_info = next(i for i in outer.infolist() if i.filename == "train.zip")
+        if train_info.compress_type != zipfile.ZIP_DEFLATED:
+            raise RuntimeError(
+                f"Expected train.zip to be DEFLATE-compressed inside the outer archive, "
+                f"got compress_type={train_info.compress_type}"
+            )
+        # Read just the local file header to find where the compressed data starts.
+        header = _range_get(CQU_BPDD_URL, train_info.header_offset, train_info.header_offset + 29)
+        fnlen, exlen = header[26:28], header[28:30]
+        data_start = train_info.header_offset + 30 + struct.unpack("<H", fnlen)[0] + struct.unpack("<H", exlen)[0]
+        data_end = data_start + train_info.compress_size - 1
+        print(
+            f"  Streaming train.zip ({train_info.compress_size / 1e9:.2f} GB compressed) "
+            "from the outer archive — this is the big one, expect several minutes..."
+        )
+        _stream_range_inflate(CQU_BPDD_URL, data_start, data_end, local_train_zip)
+
+    print("  Identifying the ravelling folder by published per-class image count...")
+    with zipfile.ZipFile(local_train_zip) as zf:
+        by_folder: dict[str, list[str]] = {}
+        for name in zf.namelist():
+            parts = name.split("/")
+            if len(parts) >= 3 and parts[0] == "train" and not name.endswith("/"):
+                by_folder.setdefault(parts[1], []).append(name)
+        counts = {k: len(v) for k, v in by_folder.items()}
+        print(f"  folder counts: {counts}")
+        target = CQU_BPDD_TRAIN_COUNTS["ravelling"]
+        matches = [k for k, n in counts.items() if n == target]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected exactly one folder with {target} images (ravelling per "
+                f"CQU-BPDD's own README table), found {matches}. Folder counts: {counts}. "
+                "Inspect data/rfdetr_drone/stage1_raw/cqu_bpdd_ravelling/train.zip by hand."
+            )
+        ravel_folder = matches[0]
+        print(f"  matched folder: {ravel_folder!r} ({target} images)")
+
+        out_img_dir = dest / "ravelling_images"
+        out_img_dir.mkdir(parents=True, exist_ok=True)
+        for name in by_folder[ravel_folder]:
+            with zf.open(name) as src, open(out_img_dir / Path(name).name, "wb") as dst_f:
+                shutil.copyfileobj(src, dst_f)
+
+    return out_img_dir
+
+
+def _range_get(url: str, start: int, end: int) -> bytes:
+    req = urllib.request.Request(
+        url, headers={"Range": f"bytes={start}-{end}", "User-Agent": "road-defect-pipeline/1.0"}
+    )
+    with urllib.request.urlopen(req) as resp:
+        return resp.read()
+
+
+def _stream_range_inflate(url: str, start: int, end: int, dest: Path, *, chunk_mb: int = 16) -> None:
+    """Fetch bytes[start:end] and stream-inflate (raw DEFLATE) them to dest.
+
+    Bounded memory regardless of the (multi-GB) range size: only one chunk
+    and zlib's internal state are held at a time.
+    """
+    chunk = chunk_mb * 1024 * 1024
+    total = end - start + 1
+    decompressor = zlib.decompressobj(-15)
+    written = 0
+    req = urllib.request.Request(
+        url, headers={"Range": f"bytes={start}-{end}", "User-Agent": "road-defect-pipeline/1.0"}
+    )
+    with urllib.request.urlopen(req) as resp, open(dest, "wb") as f:
+        while True:
+            buf = resp.read(chunk)
+            if not buf:
+                break
+            f.write(decompressor.decompress(buf))
+            written += len(buf)
+            print(f"\r  {dest.name}: {written / 1e6:.0f}/{total / 1e6:.0f} MB compressed", end="", flush=True)
+        f.write(decompressor.flush())
+    print()
+
+
 def prepare_drone_stage1(
     cfg: DroneStage1Config,
     *,
@@ -97,10 +264,13 @@ def prepare_drone_stage1(
     use_uapd: bool = True,
     use_highrpd: bool = True,
     use_rf_pothole_drone: bool = True,
+    use_cqu_bpdd_ravelling: bool = False,
     local_overrides: dict[str, Path] | None = None,
+    extra_local: list[tuple[str, Path]] | None = None,
 ) -> Path:
     raw_dir, parts_dir, out_dir = cfg.raw_dir, cfg.parts_dir, cfg.dataset_dir
     local_overrides = local_overrides or {}
+    extra_local = extra_local or []
 
     if clean:
         for d in (raw_dir, parts_dir):
@@ -166,6 +336,45 @@ def prepare_drone_stage1(
         except Exception as e:
             print(f"  SKIPPED rf_pothole_drone: {e}")
 
+    if use_cqu_bpdd_ravelling:
+        print("\n=== cqu_bpdd_ravelling ===")
+        print(
+            "  LICENSE: CQU-BPDD is CC BY-NC 4.0 (non-commercial only). Do not enable "
+            "this source if the trained model ships in a commercial product."
+        )
+        print(
+            "  NOTE: not a drone source (in-vehicle inspection camera) and whole-image "
+            "weak labels only (full-frame box, not a tight crop) — see docs/DRONE_DATASETS.md."
+        )
+        try:
+            raw = local_overrides.get("cqu_bpdd_ravelling") or download_cqu_bpdd_ravelling(
+                raw_dir / "cqu_bpdd_ravelling"
+            )
+            part_out = parts_dir / "cqu_bpdd_ravelling"
+            part_out = ingest_classification_folder(Path(raw), part_out, "ravelling")
+            _apply_gsd(part_out, "cqu_bpdd_ravelling")
+            parts.append(part_out)
+            print(f"  OK -> {part_out}")
+        except Exception as e:
+            print(f"  SKIPPED cqu_bpdd_ravelling: {e}")
+
+    # Hand-labeled bootstrap batches (your own drone footage, labeled via the
+    # SAM-assisted workflow — see README "Labeling workflow (SAM-assisted)").
+    # This is the real path to drainage_issue/edge_damage coverage: no public
+    # drone dataset has either (see docs/DRONE_DATASETS.md). Any standard
+    # COCO or YOLO export using this repo's class names works here — the same
+    # auto-detecting ingest_to_coco the dashcam pipeline uses for --local-dir.
+    for name, path in extra_local:
+        print(f"\n=== {name} (hand-labeled bootstrap) ===")
+        try:
+            part_out = parts_dir / name
+            part_out = ingest_to_coco(Path(path), part_out)
+            _apply_gsd(part_out, name)
+            parts.append(part_out)
+            print(f"  OK -> {part_out}")
+        except Exception as e:
+            print(f"  SKIPPED {name}: {e}")
+
     if not parts:
         raise SystemExit("No drone Stage-1 sources prepared successfully")
 
@@ -183,10 +392,13 @@ def prepare_drone_stage1(
 
     print_class_histogram(out_dir)
     print(f"\nDRONE_STAGE1_DIR = {out_dir}")
-    print(
-        "\nNOTE: drainage_issue and edge_damage are not covered by any public drone "
-        "source — see docs/DRONE_DATASETS.md 'Coverage gaps' before training."
-    )
+    if not extra_local:
+        print(
+            "\nNOTE: edge_damage has no public source at any camera angle, and "
+            "drainage_issue has none either — see docs/DRONE_DATASETS.md 'Coverage "
+            "gaps'. Use --extra-local edge_damage=/path/to/coco_or_yolo (and "
+            "drainage_issue=...) once you have a hand-labeled bootstrap batch."
+        )
     return out_dir
 
 
@@ -210,12 +422,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-highrpd", action="store_true")
     p.add_argument("--no-rf-pothole-drone", action="store_true")
     p.add_argument(
+        "--cqu-bpdd-ravelling",
+        action="store_true",
+        help="Opt in to CQU-BPDD's ravelling subset (CC BY-NC 4.0 non-commercial only; "
+        "not drone altitude; whole-image weak labels). Off by default — see "
+        "docs/DRONE_DATASETS.md before enabling. Downloads+decompresses ~3.9GB.",
+    )
+    p.add_argument(
         "--local",
         action="append",
         default=[],
         metavar="SOURCE=PATH",
         help="Use a manually-downloaded folder/zip instead of fetching SOURCE "
         "(uav_pdd2023|uapd|highrpd|rf_pothole_drone). Repeatable.",
+    )
+    p.add_argument(
+        "--extra-local",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Merge in an additional hand-labeled COCO or YOLO dataset (e.g. your own "
+        "drone footage labeled for drainage_issue/edge_damage via the SAM-assisted "
+        "workflow). NAME is just a tag for the merged filenames. Repeatable.",
     )
     p.add_argument("--env", type=Path, default=None)
     return p
@@ -236,6 +464,14 @@ def main(argv: list[str] | None = None) -> int:
         p = Path(path_s)
         overrides[key] = extract_zip(p, cfg.raw_dir / f"{key}_local") if p.is_file() else p
 
+    extra: list[tuple[str, Path]] = []
+    for item in args.extra_local:
+        if "=" not in item:
+            raise SystemExit(f"--extra-local expects NAME=PATH, got: {item}")
+        name, _, path_s = item.partition("=")
+        p = Path(path_s)
+        extra.append((name, extract_zip(p, cfg.raw_dir / f"{name}_local") if p.is_file() else p))
+
     prepare_drone_stage1(
         cfg,
         clean=not args.no_clean,
@@ -243,7 +479,9 @@ def main(argv: list[str] | None = None) -> int:
         use_uapd=not args.no_uapd,
         use_highrpd=not args.no_highrpd,
         use_rf_pothole_drone=not args.no_rf_pothole_drone,
+        use_cqu_bpdd_ravelling=args.cqu_bpdd_ravelling,
         local_overrides=overrides,
+        extra_local=extra,
     )
     return 0
 

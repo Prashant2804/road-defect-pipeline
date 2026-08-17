@@ -79,6 +79,37 @@ DRONE_SOURCES: dict[str, DroneSource] = {
         documented_altitude_m=None,
         notes="465 images, pothole-only, visually confirmed nadir crops. Good for scale diversity.",
     ),
+    "cqu_bpdd_ravelling": DroneSource(
+        key="cqu_bpdd_ravelling",
+        name="CQU-BPDD (ravelling subset only)",
+        url="https://huggingface.co/datasets/Ggggcs/CQU-BPDD",
+        license="CC BY-NC 4.0 (non-commercial only — do not enable if this model ships commercially)",
+        format="classification",
+        documented_altitude_m=None,
+        notes=(
+            "NOT a drone: captured by an in-vehicle inspection camera pointed straight "
+            "down, ~2x3m pavement patch per image, 1200x900px. Whole-image classification "
+            "labels only, no boxes — ingested as one full-frame weak box per image, not a "
+            "tight crop. Opt-in only (--cqu-bpdd-ravelling); off by default. See "
+            "docs/DRONE_DATASETS.md 'ravelling / edge_damage sourcing' before enabling."
+        ),
+    ),
+}
+
+# CQU-BPDD's published per-class train-split image counts (its own README table),
+# used to identify the ravelling folder inside the archive — its own zip uses
+# Chinese-pavement-engineering folder names (e.g. "cementation_fissures") that
+# don't match the paper's English category names 1:1, so we match by count
+# instead of by name. See download_drone.download_cqu_bpdd_ravelling.
+CQU_BPDD_TRAIN_COUNTS = {
+    "transverse_crack": 518,
+    "massive_crack": 1200,
+    "alligator_crack": 424,
+    "crack_pouring": 1000,
+    "longitudinal_crack": 1000,
+    "ravelling": 477,
+    "repair": 518,
+    "normal": 5000,
 }
 
 # Fill in once measured — see docs/DRONE_DATASETS.md "Calibrating GSD".

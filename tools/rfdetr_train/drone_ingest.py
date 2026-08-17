@@ -262,3 +262,72 @@ def ingest_highrpd(
     if not (out_dir / "train" / "_annotations.coco.json").exists():
         raise RuntimeError("HighRPD conversion produced no train split")
     return out_dir
+
+
+def ingest_classification_folder(
+    img_dir: Path,
+    out_dir: Path,
+    class_name: str,
+    *,
+    val_frac: float = 0.15,
+    seed: int = 7,
+) -> Path:
+    """Convert a folder of same-class images (no boxes) into COCO detection data.
+
+    Used for whole-image classification sources (e.g. CQU-BPDD's ravelling
+    folder) where every image gets one full-frame bounding box. This is a
+    weak label — RF-DETR sees one giant box per image, not a tight crop
+    around the distress — call this out explicitly wherever it's used
+    (docs/DRONE_DATASETS.md), don't let it look like a normal annotated source.
+    """
+    resolved = resolve_class(class_name)
+    if resolved is None:
+        raise ValueError(f"{class_name!r} does not resolve to a taxonomy class")
+    cat_id = CLASS_TO_ID[resolved] + 1
+
+    files = sorted(p for p in Path(img_dir).iterdir() if p.suffix.lower() in IMG_EXTS)
+    if not files:
+        raise RuntimeError(f"No images under {img_dir}")
+
+    random.seed(seed)
+    files = list(files)
+    random.shuffle(files)
+    n_val = max(1, int(val_frac * len(files)))
+    splits = {"valid": files[:n_val], "train": files[n_val:]}
+
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+
+    for split, subset in splits.items():
+        sdir = out_dir / split
+        sdir.mkdir(parents=True)
+        images, anns = [], []
+        img_id, ann_id = 1, 1
+        for img_path in subset:
+            with Image.open(img_path) as im:
+                w, h = im.size
+            shutil.copy2(img_path, sdir / img_path.name)
+            images.append({"id": img_id, "file_name": img_path.name, "width": w, "height": h})
+            anns.append({
+                "id": ann_id,
+                "image_id": img_id,
+                "category_id": cat_id,
+                "bbox": [0, 0, w, h],
+                "area": float(w * h),
+                "iscrowd": 0,
+            })
+            ann_id += 1
+            img_id += 1
+        doc = {
+            "info": {"description": f"{class_name} whole-image weak label, {split}"},
+            "licenses": [],
+            "categories": coco_categories(CLASS_NAMES),
+            "images": images,
+            "annotations": anns,
+        }
+        (sdir / "_annotations.coco.json").write_text(json.dumps(doc), encoding="utf-8")
+        print(f"  {class_name} {split}: {len(images)} images (full-frame weak boxes)")
+
+    if not (out_dir / "train" / "_annotations.coco.json").exists():
+        raise RuntimeError("Classification-folder conversion produced no train split")
+    return out_dir
