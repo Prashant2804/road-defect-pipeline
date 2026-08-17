@@ -62,6 +62,50 @@ class Stage1Config:
 
 
 @dataclass
+class DroneStage1Config:
+    """Drone/UAV top-down Stage-1: merged public sources, RFDETRMedium, 50 epochs.
+
+    Mirrors Stage1Config's training defaults (same GPU, same model size) —
+    only the data sources and work_root differ. See
+    tools/rfdetr_train/download_drone.py and docs/DRONE_DATASETS.md.
+    """
+
+    work_root: Path = field(default_factory=lambda: repo_root() / "data" / "rfdetr_drone")
+    output_dir: Path = field(default_factory=lambda: repo_root() / "runs" / "rfdetr_drone_stage1")
+    dataset_dir_override: Path | None = None
+
+    # Train — same budget as the dashcam Stage-1 run on the same GPU.
+    epochs: int = 50
+    batch_size: int = 16
+    grad_accum_steps: int = 1
+    lr: float = 1e-4
+    num_workers: int = 8
+    early_stopping: bool = True
+    early_stopping_patience: int = 10
+    resume: str | None = None
+    pretrain_weights: str | None = None
+    aug_preset: str | None = None
+
+    @property
+    def raw_dir(self) -> Path:
+        return self.work_root / "stage1_raw"
+
+    @property
+    def parts_dir(self) -> Path:
+        return self.work_root / "stage1_parts"
+
+    @property
+    def dataset_dir(self) -> Path:
+        if self.dataset_dir_override is not None:
+            return Path(self.dataset_dir_override)
+        return self.work_root / "stage1"
+
+    @property
+    def effective_batch(self) -> int:
+        return self.batch_size * self.grad_accum_steps
+
+
+@dataclass
 class Stage2Config:
     """Multi-source merge + RFDETRLarge overnight training."""
 

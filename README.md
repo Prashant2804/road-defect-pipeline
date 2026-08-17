@@ -587,6 +587,37 @@ Or step by step:
 Optional downloads: `EXTRA_DOWNLOAD_ARGS="--bharatpothole --road-crack" ./scripts/run_stage1.sh`.
 Colab path remains `notebooks/colab_rfdetr_train.ipynb` (points here for VM use).
 
+### RF-DETR drone Stage 1 (top-down UAV data)
+
+Same idea, different viewpoint: merges public **nadir/UAV** pavement-distress
+datasets (UAV-PDD2023, UAPD, HighRPD, a Roboflow drone-pothole set) into the
+same 6-class COCO layout and trains **RFDETRMedium** for 50 epochs. No
+road-segmentation/IPM stage needed here — a drone looking straight down is
+already the top-down image the dashcam pipeline has to synthesize. See
+[docs/DRONE_DATASETS.md](docs/DRONE_DATASETS.md) for source licenses, the
+class-mapping table, GSD-calibration steps, and the known coverage gap
+(`drainage_issue`/`edge_damage` have no public drone source yet).
+
+```bash
+cp .env.example .env          # paste ROBOFLOW_API_KEY (only rf_pothole_drone needs it)
+./scripts/setup_rfdetr_vm.sh
+
+tmux new -s rfdetr-drone
+./scripts/run_drone_stage1.sh
+# detach: Ctrl-b d   |  reattach: tmux attach -t rfdetr-drone
+```
+
+Or step by step:
+
+```bash
+.venv/bin/python -m tools.rfdetr_train.download_drone
+.venv/bin/python -m tools.rfdetr_train.train_drone --batch 24 --epochs 50
+```
+
+Skip a source: `EXTRA_DOWNLOAD_ARGS="--no-uapd" ./scripts/run_drone_stage1.sh`.
+Manually-downloaded fallback (if Zenodo/Mendeley/Drive are blocked from the VM):
+`--local uav_pdd2023=/path/to/zip_or_dir`.
+
 ### RF-DETR Medium on built 6-class (50 epochs, high VRAM)
 
 Train **RFDETRMedium** on the prepared 6-class COCO (`data/rfdetr/stage2` preferred,

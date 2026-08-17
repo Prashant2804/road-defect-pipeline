@@ -34,6 +34,18 @@ CLASS_ALIASES: dict[str, str | None] = {
     "transverse cracking": "longitudinal_crack",
     "tc": "longitudinal_crack",
     "lc": "longitudinal_crack",
+    # Oblique crack (OC) — common 3rd crack orientation in UAV pavement-distress
+    # datasets (UAPD, UAV-PDD2023). No dedicated class in this taxonomy; folded
+    # into longitudinal_crack alongside transverse, same as D10.
+    "oblique crack": "longitudinal_crack",
+    "oblique_crack": "longitudinal_crack",
+    "oblique-crack": "longitudinal_crack",
+    "oblique cracking": "longitudinal_crack",
+    "oc": "longitudinal_crack",
+    # "line crack" — HighRPD's UAV term for a single linear (non-branching) crack.
+    "line crack": "longitudinal_crack",
+    "line_crack": "longitudinal_crack",
+    "line": "longitudinal_crack",
     "alligator crack": "alligator_crack",
     "alligator_crack": "alligator_crack",
     "alligator cracking": "alligator_crack",
@@ -46,6 +58,12 @@ CLASS_ALIASES: dict[str, str | None] = {
     "reticular crack": "alligator_crack",
     "reticular_crack": "alligator_crack",
     "rc": "alligator_crack",
+    "ac": "alligator_crack",
+    # "block crack" — HighRPD's UAV term for a rectangular fatigue-cracking cell;
+    # same failure mode as alligator cracking, viewed top-down.
+    "block crack": "alligator_crack",
+    "block_crack": "alligator_crack",
+    "block": "alligator_crack",
     "pothole": "pothole",
     "potholes": "pothole",
     "pot hole": "pothole",
@@ -53,6 +71,10 @@ CLASS_ALIASES: dict[str, str | None] = {
     "high pothole": "pothole",
     "medium pothole": "pothole",
     "low pothole": "pothole",
+    "ph": "pothole",
+    # HighRPD calls a pothole a "pit" (top-down, it reads as a dark pit, not a rim).
+    "pit": "pothole",
+    "pits": "pothole",
     # Class 4 = rutting + ravelling / surface distress (merged into ravelling)
     "ravelling": "ravelling",
     "raveling": "ravelling",
@@ -110,9 +132,9 @@ CLASS_ALIASES: dict[str, str | None] = {
     "open drainage(not overflowing)": "drainage_issue",
     "repair": None,
     "repaired": None,
+    "rp": None,
     "patching": None,
     "patch": None,
-    "block crack": None,
     "other corruption": None,
     "other": None,
     "striping": None,
@@ -162,6 +184,10 @@ def resolve_class(name: str) -> str | None:
     for needle, dest in (
         ("alligator", "alligator_crack"),
         ("fatigue", "alligator_crack"),
+        ("block crack", "alligator_crack"),
+        ("oblique", "longitudinal_crack"),
+        ("line crack", "longitudinal_crack"),
+        ("pit", "pothole"),
         ("ravelling", "ravelling"),
         ("raveling", "ravelling"),
         ("rutting", "ravelling"),
